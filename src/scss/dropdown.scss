@@ -1,0 +1,106 @@
+@use './mixins.scss' as *;
+
+.dmenu {
+	display: block;
+	position: relative;
+	z-index: 1000;
+	padding: 5px 3px 6px 3px;
+	border-radius: 10px;
+	width: auto;
+	min-width: 25px;
+	$side-padding: 8px;
+	$divider-side-padding: $side-padding - 2;
+
+	background-color: var(--bg-color);
+	border: 1px solid rgba(white, 0.6);
+	box-shadow: rgba(var(--textColor1), 0.05) 0px 0px 10px 1px;
+
+	--inactive-opacity: 0.8;
+	--picked-opacity: 0.04;
+
+	&__section-name {
+		@include text-style(1, 400, 1.05rem);
+		opacity: 0.4;
+		@include elipses-overflow;
+		max-width: 140px;
+		padding: 2px $side-padding 4px $side-padding;
+	}
+
+	&__section-divider {
+		width: calc(100% - calc(2 * $divider-side-padding));
+		border-top: 0.5px solid rgba(var(--textColor1), 0.11);
+		margin: 4px 0px 4px $divider-side-padding;
+	}
+
+	&__option {
+		color: rgba(var(--textColor1), 1);
+		white-space: nowrap;
+		border-radius: 7px;
+		width: 100%;
+		display: block;
+		margin-bottom: 1px;
+		overflow: hidden;
+		position: relative;
+		transition: 0s ease-in-out;
+		cursor: pointer;
+		opacity: var(--inactive-opacity);
+
+		&:last-child {
+			padding-bottom: 0px;
+		}
+
+		&:hover {
+			opacity: 1;
+			background-color: rgba(var(--textColor1), calc(var(--picked-opacity) - 0.008));
+		}
+
+		&:focus-visible {
+			@include border-focus;
+		}
+
+		&--selected {
+			opacity: 1;
+			background-color: rgba(var(--textColor1), var(--picked-opacity)) !important;
+		}
+	}
+
+	&__option--selected {
+		opacity: 1 !important;
+	}
+
+	&__option-text {
+		@include text-style(1, 400, 1.165rem);
+	}
+
+	&__option-btn {
+		@include flex(center, space-between);
+		padding: 4px $side-padding 5px $side-padding;
+		width: calc(100% - 20px);
+		transition: background-color 0.04s ease-in-out;
+		gap: 12px;
+
+		&--unclickable:active {
+			transition: 0s !important;
+		}
+
+		&:active {
+			transition: 0.12s ease-in-out;
+			transform: scale(0.984);
+		}
+
+		&:disabled {
+			opacity: 0.14;
+		}
+	}
+
+	&__context {
+		padding: 2px $side-padding 5px 6.5px;
+		@include text-style(0.3, 400, 1rem);
+	}
+
+	&__toggle-optn {
+		padding: 6px 5px 5px 8px;
+		width: 100%;
+		@include flex(center, space-between);
+	}
+}

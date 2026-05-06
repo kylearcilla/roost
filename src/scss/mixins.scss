@@ -1,0 +1,206 @@
+@mixin txt-color($opacity: 1, $type: "text") {
+    @if $type == "stroke" {
+        stroke: rgba(var(--textColor1), $opacity);
+    }
+    @else if $type == "bg" {
+        background: rgba(var(--textColor1), $opacity);
+    }
+    @else if $type == "border" {
+        border-color: rgba(var(--textColor1), $opacity);
+    }
+    @else {
+        color: rgba(var(--textColor1), $opacity);
+    }
+}
+
+@mixin flex($vert-spacing, $hoz-spacing: _) {
+    display: flex;
+
+    @if $vert-spacing != _ {
+        align-items: $vert-spacing;
+    }
+    @if $hoz-spacing != _ {
+        justify-content: $hoz-spacing;
+    }
+}
+
+@mixin blue-select {
+    &::selection {
+        background-color: #D8ECFC;
+        color: rgb(26, 136, 248);
+    }
+}
+
+@mixin center {
+    @include flex(center, center);
+}
+
+@mixin circle($diameter) {
+    height: $diameter;
+    width: $diameter;
+    aspect-ratio: 1 / 1;
+    border-radius: 100%;
+}
+
+@mixin elipses-overflow {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0px;
+}
+
+@mixin truncate-lines($line_number: 1) {
+    display: -webkit-box;
+    -webkit-line-clamp: $line_number;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+    overflow: hidden;
+}
+@mixin trans-text($color, $opacity) {
+    color: $color;
+    opacity: $opacity;
+}
+
+@mixin abs-center() {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+@mixin abs-bottom-right($bottom: 0, $right: 0) {
+    position: absolute;
+    right: $right;
+    bottom: $bottom;
+
+    @include pos-center-helper($bottom, $right)
+}
+@mixin abs-top-right($top: 0, $right: 0) {
+    position: absolute;
+    top: $top;
+    right: $right;
+
+    @include pos-center-helper($top, $right)
+}
+@mixin abs-top-left($top: 0, $left: 0) {
+    position: absolute;
+    top: $top;
+    left: $left;
+
+    @include pos-center-helper($top, $left)
+}
+@mixin abs-bottom-left($bottom: 0, $left: 0) {
+    position: absolute;
+    bottom: $bottom;
+    left: $left;
+
+    @include pos-center-helper($bottom, $left)
+}
+@mixin pos-center-helper($top-bottom, $right-left) {
+    @if $top-bottom == 50% {
+        transform: translateY((-50%));
+    }
+    @if $right-left == 50% {
+        transform: translateX((-50%));
+    }
+}
+
+@mixin contrast-bg($bg: "bg-2") {
+    @if $bg == "bg-1" {
+        background-color: var(--bg-1);
+        box-shadow: rgba(var(--textColor1), 0.085) 0px 0px 10px 1px; 
+        border: 0.5px solid rgba(var(--textColor1), 0.055);
+    }
+    @else if $bg == "bg-2" {
+        background-color: var(--bg-2);
+        border: 0.5px solid rgba(var(--textColor1), 0.065);
+        box-shadow: 0px 4px 10px 1px rgba(0, 0, 0, 0.075);
+    }
+    @else if $bg == "bg-3" {
+        background-color: var(--bg-2);
+        box-shadow: 0px 4px 10px 1px rgba(0, 0, 0, 0.075);
+        border: none;
+    }
+}
+
+@mixin smooth-bounce {
+    transition: 0.18s cubic-bezier(.4, 0, .2, 1);
+}
+
+@mixin text-style($opacity: _, $weight: _, $size: _, $font: _) {
+    @if $opacity != _ {
+        color: rgba(var(--textColor1), $opacity);
+    }
+    @if $size != _ {
+        font-size: $size;
+    }
+    @if $weight != _ {
+        font-weight: $weight;
+    }
+    @if $font == "system" {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    @else if $font != _ {
+        font-family: $font;
+    }
+}
+
+@mixin border-focus {
+    transition: box-shadow 0.3s ease-in-out;
+    box-shadow: rgba(#0C8CE9, 0.6) 0px 0px 0px 2px inset, 
+                rgba(#0C8CE9, 0.3) 0px 0px 0px 2.5px;
+}
+
+@mixin square($size, $b-radius: 0) {
+    height: $size;
+    width: $size;
+    min-height: $size;
+    min-width: $size;
+    border-radius: $b-radius;
+}
+
+@mixin box($height: 100%, $width: 100%, $b-radius: 0) {
+    height: $height;
+    width: $width;
+    min-height: $height;
+    min-width: $width;
+    border-radius: $b-radius;
+}
+
+@mixin not-visible {
+    opacity: 0;
+    visibility: hidden;
+}
+
+@mixin visible($opacity: 1) {
+    opacity: $opacity;
+    visibility: visible;
+}
+
+@mixin hov-opacity($before: 0.5, $after: 1, $length: 0.14s) {
+    opacity: $before;
+    transition: $length ease-in-out;
+
+    &:hover {
+        opacity: $after;
+    }
+}
+
+@mixin flex-col($val: space-between) {
+    display: flex;
+    flex-direction: column;
+    justify-content: $val;
+}
+
+@mixin blur-bg($blur-val: 80px, $bg: rgba(91, 91, 91, 0.5)) {
+    backdrop-filter: blur($blur-val);
+    -webkit-backdrop-filter: blur($blur-val);
+    background: $bg;
+}
+
+@mixin drop-border {
+    opacity: 0;
+    content: " ";
+    z-index: 100;
+    transition: opacity 0.08s ease-in-out;
+    background-color: #71B8FF;
+}
