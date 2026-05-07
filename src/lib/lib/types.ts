@@ -18,6 +18,7 @@ type ContentSource = {
 type ImageDimsType = '3x2' | 'portrait' | 'square' | 'video' | 'default' | 'auto'
 
 type Media = {
+	id: string
 	type: 'image' | 'video'
 	url?: string
 	path?: string
@@ -81,7 +82,7 @@ type SidebarNavItem = {
 	count?: number
 }
 
-type LibraryUser = {
+type User = {
 	id: string
 	displayName: string
 	avatarUrl?: string

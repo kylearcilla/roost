@@ -30,7 +30,7 @@
 
 	const DIM_ORDER: ImageDimsType[] = ['auto', 'default', '3x2', 'portrait', 'square', 'video']
 	const VIDEO_HOVER_PLAY_MS = 400
-	const videoHoverPlayTimers = new WeakMap<HTMLVideoElement, ReturnType<typeof setTimeout>>()
+	const videoHoverPlayTimers = new WeakMap<HTMLVideoElement, number>()
 	const videoHoverPlayCommitted = new WeakMap<HTMLVideoElement, boolean>()
 
 	const DIM_MENU_LABEL: Record<ImageDimsType, string> = {
@@ -219,18 +219,21 @@
 		v.pause()
 		v.muted = true
 	}
+	function mediaIdForPatch(m?: Media | null) {
+		return m?.id ?? crypto.randomUUID()
+	}
+
 	function applyImageHref(href: string) {
 		if (imgFloatMode === 'add') {
 			patchLibraryItem(item.id, {
-				media: { type: 'image', url: href, dims: 'auto' }
+				media: { id: crypto.randomUUID(), type: 'image', url: href, dims: 'auto' }
 			})
-		} 
-		else {
+		} else {
 			const m = item.media
 			const typ = m?.type === 'video' ? 'video' : 'image'
 			const dims = m?.dims ?? 'auto'
 			patchLibraryItem(item.id, {
-				media: { type: typ, url: href, path: undefined, dims }
+				media: { id: mediaIdForPatch(m), type: typ, url: href, path: undefined, dims }
 			})
 		}
 	}
@@ -468,6 +471,7 @@
 		if (!m || !(m.url?.trim() || m.path?.trim())) return
 		patchLibraryItem(item.id, {
 			media: {
+				id: mediaIdForPatch(m),
 				type: m.type === 'video' ? 'video' : 'image',
 				url: m.url,
 				path: m.path,
@@ -662,7 +666,7 @@
 	}
 
 	function ctxDelete() {
-		global.onDeleteItem(item.id)
+		void global.onDeleteItem(item.id)
 	}
 
 	function commitTitle() {
@@ -1074,9 +1078,6 @@
 			flex-wrap: wrap;
 			margin-bottom: 6px;
 		}
-		&__src.source-link {
-			min-width: 0;
-		}
 		&__date {
 			@include text-style(0.38, 400, 1.1rem);
 			flex-shrink: 0;
@@ -1147,11 +1148,6 @@
 			&:hover {
 				text-decoration: underline;
 			}
-		}
-		&__quote-author {
-			@include text-style(0.42, 400, 1.2rem);
-			margin: 0;
-			padding: 0 var(--pad-inline) 8px;
 		}
 	}
 </style>

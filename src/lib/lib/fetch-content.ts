@@ -1,6 +1,6 @@
 /**
  * Fetches page metadata: Open Graph, Twitter cards, and oEmbed where available.
- * Runs in the browser for the static SPA / Electron shell; some origins may block `fetch` (CORS) — use Electron `net` or a preload bridge if needed.
+ * Runs in the browser for the static SPA / Electron shell; some origins block `fetch` (CORS) — in Electron use `electronAPI.fetchMetadata` (main `net.fetch`).
  */
 
 export type ContentProvider =
@@ -44,8 +44,9 @@ export type FetchedContentMetadata = {
 	reddit?: Record<string, unknown>
 }
 
+/** Plain desktop Chrome UA — explicit bot strings get 403/empty HTML from many publishers. */
 const DEFAULT_UA =
-	'Mozilla/5.0 (compatible; RoostBot/1.0; +https://example.invalid) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+	'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 function mergeAbortSignals(outer: AbortSignal | null | undefined, inner: AbortSignal): AbortSignal {
 	if (!outer) return inner
@@ -315,6 +316,51 @@ async function fetchRedditPostJson(
 	}
 }
 
+/** Serialized main-process `net.fetch` result (preload must not construct `Response` — Electron bug). */
+type RoostNetPayload = {
+	__roostNet: true
+	body: string
+	status: number
+	headers: Record<string, string>
+}
+
+function responseFromRoostNetPayload(p: RoostNetPayload): Response {
+	const h = p.headers && typeof p.headers === 'object' ? p.headers : {}
+	let st = p.status
+	if (!Number.isFinite(st) || st < 200 || st > 599) st = 502
+	return new Response(p.body, {
+		status: st,
+		statusText: '',
+		headers: new Headers(h)
+	})
+}
+
+/** Electron: main `net.fetch` via preload; otherwise normal `fetch` (CORS applies). */
+async function roostAwareFetch(
+	url: string,
+	init: RequestInit & { timeoutMs?: number } = {}
+): Promise<Response> {
+	const bridge =
+		typeof window !== 'undefined' && typeof window.electronAPI?.fetchMetadata === 'function'
+			? window.electronAPI.fetchMetadata
+			: undefined
+	if (bridge) {
+		const { signal: _skip, ...rest } = init
+		const packed = (await bridge(url, rest)) as unknown
+		if (
+			!packed ||
+			typeof packed !== 'object' ||
+			!('__roostNet' in packed) ||
+			typeof (packed as RoostNetPayload).body !== 'string' ||
+			typeof (packed as RoostNetPayload).status !== 'number'
+		) {
+			throw new TypeError('electronAPI.fetchMetadata: bad payload (restart Electron after preload update)')
+		}
+		return responseFromRoostNetPayload(packed as RoostNetPayload)
+	}
+	return fetch(url, init)
+}
+
 function normalizeInputUrl(raw: string): URL {
 	const trimmed = raw.trim()
 	if (!trimmed) throw new Error('Empty URL')
@@ -330,14 +376,22 @@ async function fetchText(
 	const ctrl = new AbortController()
 	const t = setTimeout(() => ctrl.abort(), timeoutMs)
 	const signal = mergeAbortSignals(outer, ctrl.signal)
+	let referer: string | undefined
 	try {
-		const res = await fetch(url, {
+		referer = `${new URL(url).origin}/`
+	} catch {
+		referer = undefined
+	}
+	try {
+		const res = await roostAwareFetch(url, {
 			...rest,
 			signal,
+			timeoutMs,
 			headers: {
 				'User-Agent': DEFAULT_UA,
 				Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
 				'Accept-Language': 'en-US,en;q=0.9',
+				...(referer ? { Referer: referer } : {}),
 				...(rest.headers as Record<string, string>)
 			},
 			redirect: 'follow'
@@ -530,21 +584,31 @@ export async function fetchContentMetadata(
 		canonicalUrl: pageUrl.href
 	}
 
-	const htmlPromise = fetchText(pageUrl.href, req).catch(() => null)
+	const htmlOutcome = fetchText(pageUrl.href, req).then(
+		(h) => ({ ok: true as const, h }),
+		(e: unknown) => ({ ok: false as const, e })
+	)
 	const directPromise = opts.skipOembed
 		? Promise.resolve(null as OEmbedPayload | null)
 		: tryProviderOembeds(pageUrl.href, provider, opts.signal)
 	const redditPromise =
 		provider === 'reddit' ? fetchRedditPostJson(pageUrl, req).catch(() => null) : Promise.resolve(null)
 
-	const [html, directOembed, redditPartial] = await Promise.all([
-		htmlPromise,
+	const [ho, directOembed, redditPartial] = await Promise.all([
+		htmlOutcome,
 		directPromise,
 		redditPromise
 	])
+	const html = ho.ok ? ho.h : null
 
 	if (!html && !directOembed && !redditPartial) {
-		throw new Error(`Could not load ${pageUrl.href} (blocked, offline, or invalid response)`)
+		const detail =
+			ho.ok === false
+				? ho.e instanceof Error
+					? ho.e.message
+					: String(ho.e)
+				: 'no HTML, oEmbed, or Reddit payload'
+		throw new Error(`Could not load ${pageUrl.href}: ${detail}`)
 	}
 
 	if (html) {
@@ -699,7 +763,12 @@ export async function validateImgURL({
 	}
 
 	try {
-		const res = await fetch(parsed.href, { method: 'HEAD', headers, signal, mode: 'cors' })
+		const res = await roostAwareFetch(parsed.href, {
+			method: 'HEAD',
+			headers,
+			signal,
+			mode: 'cors'
+		})
 		if (res.status === 405 || res.status === 501) {
 			await handleCorsErrorRequest(parsed.href, formats, signal)
 			return

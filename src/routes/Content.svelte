@@ -210,8 +210,7 @@
 	.lib-masonry {
 		position: relative;
 		width: 100%;
-		// background: red;
-		min-height: 700px;
+		min-height: 0;
 
 		&--list {
 			display: flex;

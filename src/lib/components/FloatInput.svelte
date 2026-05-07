@@ -31,12 +31,15 @@
 		imgUrlEmptyGlyph?: string
 		onImgUpload?: () => void
 		isDisabled?: boolean
+		/** When `position` is set, default is `absolute`; set `fixed` to anchor to the viewport. */
+		positionMode?: 'fixed' | 'absolute'
 	}
 
 	let {
 		dmenuId,
 		hidden = $bindable(true),
 		position: positionOverride,
+		positionMode,
 		zIndex = 25001,
 		value = $bindable(''),
 		inputRef = $bindable<HTMLInputElement | null>(null),
@@ -67,7 +70,7 @@
 	const position = $derived(positionOverride ?? cursorOpenSnap)
 
 	const bouncePosType = $derived<'fixed' | 'absolute'>(
-		positionOverride != null ? 'absolute' : 'fixed'
+		positionMode ?? (positionOverride != null ? 'absolute' : 'fixed')
 	)
 
 	const inputDomId = $derived(`float-input-${dmenuId.replace(/[^a-zA-Z0-9_-]/g, '-')}`)

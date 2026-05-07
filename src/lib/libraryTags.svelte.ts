@@ -1,3 +1,4 @@
+import { use_mocks } from '$lib/env'
 import { SEED_TAGS } from '$lib/mocks/tags'
 
 function cloneColor(c: Color): Color {
@@ -13,7 +14,9 @@ const seedById = Object.fromEntries(SEED_TAGS.map((t) => [t.id, cloneTag(t)])) a
 	Tag
 >
 
-export const libraryTags = $state<{ byId: Record<string, Tag> }>({ byId: { ...seedById } })
+export const libraryTags = $state<{ byId: Record<string, Tag> }>({
+	byId: use_mocks ? { ...seedById } : {}
+})
 
 export function upsertLibraryTag(tag: Tag) {
 	libraryTags.byId = { ...libraryTags.byId, [tag.id]: cloneTag(tag) }

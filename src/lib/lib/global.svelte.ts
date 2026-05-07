@@ -1,4 +1,6 @@
+import { use_mocks } from '$lib/env'
 import { findItems } from '$lib/lib/collections'
+import { db } from '$lib/lib/DBManager'
 import { libraryContent, patchLibraryItem } from '$lib/libraryContent.svelte'
 import { deleteLibraryTag, libraryTags, patchLibraryTag, upsertLibraryTag } from '$lib/libraryTags.svelte'
 import { mockCollections, mockFavorites, mockUser } from '$lib/mocks'
@@ -10,36 +12,30 @@ const COLLECTIONS_ORDER_KEY = 'sidebar'
 
 type TagRow = Tag & { idx: number }
 
-export class Global {
-	user = $state<LibraryUser>({ ...mockUser })
-    onHomePage = $state(false)
+const emptyUser: User = { id: '', displayName: '', avatarUrl: undefined }
 
-    
-	collections = $state<Collection[]>(mockCollections.map((c) => ({ ...c })))
-	selectedCollectionId = $state('advice')
+export class Global {
+	user = $state<User>(use_mocks ? { ...mockUser } : { ...emptyUser })
+	onHomePage = $state(!use_mocks)
+
+	collections = $state<Collection[]>(
+		use_mocks ? mockCollections.map((c) => ({ ...c })) : []
+	)
+	selectedCollectionId = $state(use_mocks ? 'advice' : '')
 	currFilterTab = $state<ContentToolbarFilter>('all')
 	currTags = $state<Tag[]>([])
-	favorites = $state<FavoriteFolder[]>(mockFavorites.map((f) => ({ ...f })))
+	favorites = $state<FavoriteFolder[]>(
+		use_mocks ? mockFavorites.map((f) => ({ ...f })) : []
+	)
 
-	/** Per-collection toolbar order: `collectionId` → `{ id, idx }[]` sorted by `idx`. */
+	/** Tag order per collection: `collectionId` → `{ id, idx }[]` sorted by `idx`. */
 	private TAG_INDICES = new Map<string, { id: string; idx: number }[]>()
-	/** Item order per `findItems` slice: key is `collectionId` for “all”, else `collectionId::tagId`. */
+	/** Item order per tag | collection ("all"): key is `collectionId` for “all”, else `collectionId::tagId`. */
 	private ITEM_INDICES = new Map<string, { id: string; idx: number }[]>()
-	/** Sidebar favorites: one bucket (`FAVORITES_ORDER_KEY`) → `{ id, idx }[]` by `idx`. */
+	/** Collection order in favorites: one bucket (`FAVORITES_ORDER_KEY`) → `{ id, idx }[]` by `idx`. */
 	private FAVORITE_INDICES = new Map<string, { id: string; idx: number }[]>()
+	/** Collection order: one bucket (`COLLECTIONS_ORDER_KEY`) → `{ id, idx }[]` by `idx`. */
     private COLLECTION_INDICES = new Map<string, { id: string; idx: number }[]>()
-
-	sortedFavorites = $derived(
-		[...this.favorites].sort(
-			(a, b) => (a.idx ?? 0) - (b.idx ?? 0) || a.id.localeCompare(b.id)
-		)
-	)
-
-	sortedCollections = $derived(
-		[...this.collections].sort(
-			(a, b) => (a.idx ?? 0) - (b.idx ?? 0) || a.id.localeCompare(b.id)
-		)
-	)
 
 	setOnHomePage(value: boolean) {
 		this.onHomePage = value
@@ -49,10 +45,18 @@ export class Global {
 		}
 	}
 	/** `id` is a tag id or a collection id (`all` view uses the collection id, not `'all'`). */
-	setColSize(id: string, size: GridColumnSize) {
+	async setColSize(id: string, size: GridColumnSize) {
 		const tag = libraryTags.byId[id]
 		if (tag) {
 			if (tag.columnSize === size) return
+			if (use_mocks) {
+				patchLibraryTag(id, { columnSize: size })
+				return
+			}
+			if (!db.isAvailable) {
+				throw new Error('setColSize: live mode enabled but DB is not available')
+			}
+			await db.tags.patch(id, { columnSize: size })
 			patchLibraryTag(id, { columnSize: size })
 			return
 		}
@@ -62,14 +66,50 @@ export class Global {
 		if (!c || c.columnSize === size) return
 		const next = [...this.collections]
 		next[i] = { ...c, columnSize: size }
+		if (use_mocks) {
+			this.collections = next
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('setColSize: live mode enabled but DB is not available')
+		}
+		await db.collections.patch(id, { columnSize: size })
 		this.collections = next
 	}
 
-    /* user  */
+	/* user */
 
-    updateUser(user: Partial<LibraryUser>) {
-        this.user = { ...this.user, ...user }
-    }
+	async fetchUser() {
+		if (use_mocks) {
+			return this.user
+		}
+		if (!db.isAvailable) {
+			throw new Error('fetchUser: live mode enabled but DB is not available')
+		}
+		const id = this.user.id
+		if (!id) {
+			throw new Error('fetchUser: no user id in live mode')
+		}
+		const row = (await db.users.get(id)) as User | undefined
+		if (row) this.user = { ...this.user, ...row }
+		return this.user
+	}
+
+	async updateUser(user: Partial<User>) {
+		if (use_mocks) {
+			this.user = { ...this.user, ...user }
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('updateUser: live mode enabled but DB is not available')
+		}
+		const id = this.user.id
+		if (!id) {
+			throw new Error('updateUser: no user id in live mode')
+		}
+		await db.users.update(id, user)
+		this.user = { ...this.user, ...user }
+	}
 
 	/* ⛳️ collections */
 
@@ -77,7 +117,33 @@ export class Global {
 		this.collections.find((c) => c.id === this.selectedCollectionId) ?? null
 	)
 
-	/** Set `selectedCollectionId` (if id exists) and replace `currTags` from `libraryTags`. */
+	async fetchCollections() {
+		if (use_mocks) {
+			const fromMocks = mockCollections.map((c) => ({ ...c }))
+			this.collections = fromMocks
+			this.selectedCollectionId = fromMocks[0]?.id ?? ''
+			this.onHomePage = !this.selectedCollectionId
+			this.syncTagsFromLibrary()
+			this.rebuildCollectionIndicesFromState()
+			return this.collections
+		}
+		if (!db.isAvailable) {
+			throw new Error('fetchCollections: live mode enabled but DB is not available')
+		}
+
+		const rows = (await db.collections.list()) as Collection[]
+		const sorted = [...rows].sort(
+			(a, b) => (a.idx ?? 0) - (b.idx ?? 0) || a.id.localeCompare(b.id)
+		)
+		this.collections = sorted
+		const active = sorted.find((c) => c.id === this.selectedCollectionId)?.id ?? sorted[0]?.id ?? ''
+		this.selectedCollectionId = active
+		this.onHomePage = !active
+		this.syncTagsFromLibrary()
+		this.rebuildCollectionIndicesFromState()
+		return this.collections
+	}
+
 	setCollection(collectionId: string) {
 		if (!this.collections.some((c) => c.id === collectionId)) return
 		this.onHomePage = false
@@ -85,17 +151,52 @@ export class Global {
 		this.syncTagsFromLibrary()
 	}
 
-	addCollection(collection: Collection) {
+	async addCollection(collection: Collection) {
+		if (use_mocks) {
+			this.collections = [...this.collections, collection]
+			this.rebuildCollectionIndicesFromState()
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('addCollection: live mode enabled but DB is not available')
+		}
+		await db.collections.insert(collection)
 		this.collections = [...this.collections, collection]
 		this.rebuildCollectionIndicesFromState()
 	}
 
-	updateCollection(collection: Collection) {
+	async updateCollection(collection: Collection) {
+		if (use_mocks) {
+			this.collections = this.collections.map((c) => (c.id === collection.id ? collection : c))
+			this.rebuildCollectionIndicesFromState()
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('updateCollection: live mode enabled but DB is not available')
+		}
+		await db.collections.update(collection.id, collection)
 		this.collections = this.collections.map((c) => (c.id === collection.id ? collection : c))
 		this.rebuildCollectionIndicesFromState()
 	}
 
-	deleteCollection(collectionId: string) {
+	async deleteCollection(collectionId: string) {
+		if (use_mocks) {
+			const next = this.collections
+				.filter((c) => c.id !== collectionId)
+				.map((c, i) => ({ ...c, idx: i }))
+			this.collections = next
+			if (this.selectedCollectionId === collectionId) {
+				const first = next[0]?.id
+				if (first) this.setCollection(first)
+				else this.selectedCollectionId = ''
+			}
+			this.rebuildCollectionIndicesFromState()
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('deleteCollection: live mode enabled but DB is not available')
+		}
+		await db.collections.delete(collectionId)
 		const next = this.collections
 			.filter((c) => c.id !== collectionId)
 			.map((c, i) => ({ ...c, idx: i }))
@@ -109,8 +210,23 @@ export class Global {
 	}
 
 	/** Sidebar passes the new order after drag; global only assigns `idx` + cache. */
-	applyCollectionsOrder(ordered: Collection[]) {
-		this.collections = ordered.map((c, i) => ({ ...c, idx: i }))
+
+	async applyCollectionsOrder(ordered: Collection[]) {
+		const next = ordered.map((c, i) => ({ ...c, idx: i }))
+		if (use_mocks) {
+			this.collections = next
+			this.rebuildCollectionIndicesFromState()
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('applyCollectionsOrder: live mode enabled but DB is not available')
+		}
+		await Promise.all(next.map((c, i) => db.collections.patch(c.id, { idx: i })))
+		await db.collectionOrder.replace(
+			COLLECTIONS_ORDER_KEY,
+			next.map((c, i) => ({ collectionId: c.id, sortIndex: i }))
+		)
+		this.collections = next
 		this.rebuildCollectionIndicesFromState()
 	}
 
@@ -133,6 +249,16 @@ export class Global {
 
 	/* ⛳️ items */
 
+	async fetchItems() {
+		if (use_mocks) {
+			return libraryContent.items
+		}
+		if (!db.isAvailable) {
+			throw new Error('fetchItems: live mode enabled but DB is not available')
+		}
+		return (await db.libraryItems.list()) as ContentItem[]
+	}
+
 	itemSliceKey(collectionId: string, filter: ContentToolbarFilter): string {
 		const cid = collectionId.trim()
 		if (!filter || filter === 'all') return cid
@@ -152,9 +278,21 @@ export class Global {
 	}
 
 	/** Remove one item and compact `idx` to `0..n-1` in every slice it belonged to. */
-	onDeleteItem(id: string) {
+	async onDeleteItem(id: string) {
 		const removed = libraryContent.items.find((i) => i.id === id)
 		if (!removed) return
+		if (use_mocks) {
+			libraryContent.items = libraryContent.items.filter((i) => i.id !== id)
+			for (const scope of this.itemScopesForContentItem(removed)) {
+				this.compactItemSliceOrder(scope.collectionId, scope.filter)
+			}
+			this.rebuildItemIndicesFromLibrary()
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('onDeleteItem: live mode enabled but DB is not available')
+		}
+		await db.libraryItems.delete(id)
 		libraryContent.items = libraryContent.items.filter((i) => i.id !== id)
 		for (const scope of this.itemScopesForContentItem(removed)) {
 			this.compactItemSliceOrder(scope.collectionId, scope.filter)
@@ -231,6 +369,16 @@ export class Global {
 
 	/* ⛳️ favorites */
 
+	async fetchFavorites() {
+		if (use_mocks) {
+			return this.favorites
+		}
+		if (!db.isAvailable) {
+			throw new Error('fetchFavorites: live mode enabled but DB is not available')
+		}
+		return (await db.favorites.list()) as FavoriteFolder[]
+	}
+
 	/** Ordered `{ id, idx }` for sidebar favorites; shallow copy. */
 	favoriteIndexList(): readonly { id: string; idx: number }[] {
 		const rows = this.FAVORITE_INDICES.get(FAVORITES_ORDER_KEY)
@@ -243,25 +391,50 @@ export class Global {
 		return row?.idx ?? live?.idx ?? 0
 	}
 
-	addFavoriteFromCollection(col: Collection) {
+	async addFavoriteFromCollection(col: Collection) {
 		if (this.favorites.some((f) => f.collectionId === col.id)) return
 		const idx = this.favorites.length
-		this.favorites = [
-			...this.favorites,
-			{
-				id: `fav-${col.id}`,
-				idx,
-				emoji: col.emoji ?? '📌',
-				name: col.name,
-				count: col.itemCount ?? 0,
-				collectionId: col.id
-			}
-		]
+		const row: FavoriteFolder = {
+			id: `fav-${col.id}`,
+			idx,
+			emoji: col.emoji ?? '📌',
+			name: col.name,
+			count: col.itemCount ?? 0,
+			collectionId: col.id
+		}
+		if (use_mocks) {
+			this.favorites = [...this.favorites, row]
+			this.rebuildFavoriteIndicesFromState()
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('addFavoriteFromCollection: live mode enabled but DB is not available')
+		}
+		await db.favorites.insert({
+			id: row.id,
+			idx: row.idx,
+			emoji: row.emoji,
+			name: row.name,
+			count: row.count,
+			collectionId: col.id
+		})
+		this.favorites = [...this.favorites, row]
 		this.rebuildFavoriteIndicesFromState()
 	}
 
-	removeFavoriteAndReindex(favoriteId: string) {
+	async removeFavoriteAndReindex(favoriteId: string) {
 		if (!this.favorites.some((f) => f.id === favoriteId)) return
+		if (use_mocks) {
+			this.favorites = this.favorites
+				.filter((f) => f.id !== favoriteId)
+				.map((f, i) => ({ ...f, idx: i }))
+			this.rebuildFavoriteIndicesFromState()
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('removeFavoriteAndReindex: live mode enabled but DB is not available')
+		}
+		await db.favorites.delete(favoriteId)
 		this.favorites = this.favorites
 			.filter((f) => f.id !== favoriteId)
 			.map((f, i) => ({ ...f, idx: i }))
@@ -269,8 +442,18 @@ export class Global {
 	}
 
 	/** Sidebar passes the new order after drag; global only assigns `idx` + cache. */
-	applyFavoritesOrder(ordered: FavoriteFolder[]) {
-		this.favorites = ordered.map((f, i) => ({ ...f, idx: i }))
+	async applyFavoritesOrder(ordered: FavoriteFolder[]) {
+		const next = ordered.map((f, i) => ({ ...f, idx: i }))
+		if (use_mocks) {
+			this.favorites = next
+			this.rebuildFavoriteIndicesFromState()
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('applyFavoritesOrder: live mode enabled but DB is not available')
+		}
+		await Promise.all(next.map((f) => db.favorites.update(f.id, { idx: f.idx })))
+		this.favorites = next
 		this.rebuildFavoriteIndicesFromState()
 	}
 
@@ -297,10 +480,16 @@ export class Global {
 
 	/* ⛳️ tags */
 
-	getCollectionTags(): Tag[] {
-		return this.currTags
+	async fetchTags() {
+		if (use_mocks) {
+			return this.currTags
+		}
+		if (!db.isAvailable) {
+			throw new Error('fetchTags: live mode enabled but DB is not available')
+		}
+		return (await db.tags.list(this.selectedCollectionId)) as Tag[]
 	}
-	getTags(): Tag[] {
+	getCurrTags(): Tag[] {
 		return this.currTags
 	}
 	deleteTag(tagId: string) {
@@ -379,38 +568,67 @@ export class Global {
 	 * Reorder toolbar tags for `collectionId` using `reorderItemArr` (`srcIdx` / `targetIdx` are tag `idx` slots).
 	 * Updates `libraryTags`, indices map, and `currTags` when that collection is active.
 	 */
-	reorderTagsInCollection(collectionId: string, srcIdx: number, targetIdx: number) {
+	async reorderTagsInCollection(collectionId: string, srcIdx: number, targetIdx: number) {
 		const arr = this.collectionTagClonesForReorder(collectionId)
 		const { updated } = reorderItemArr({ array: arr, srcIdx, targetIdx })
 		this.applyIdxPatches(updated)
+		if (!use_mocks) {
+			if (!db.isAvailable) {
+				throw new Error('reorderTagsInCollection: live mode enabled but DB is not available')
+			}
+			for (const u of updated) {
+				await db.tags.patch(u.id, { idx: u.idx })
+			}
+			const orderAfter = this.collectionTagClonesForReorder(collectionId)
+			await db.tags.replaceOrder(
+				collectionId,
+				orderAfter.map((t, i) => ({ tagId: t.id, sortIndex: i }))
+			)
+		}
 		this.rebuildIndicesMapFromLibrary()
 		if (this.selectedCollectionId === collectionId) this.syncTagsFromLibrary()
 	}
 
 	/** Same as `reorderTagsInCollection` for the sidebar-selected collection. */
-	reorderTagsInCurrentCollection(srcIdx: number, targetIdx: number) {
-		this.reorderTagsInCollection(this.selectedCollectionId, srcIdx, targetIdx)
+	async reorderTagsInCurrentCollection(srcIdx: number, targetIdx: number) {
+		await this.reorderTagsInCollection(this.selectedCollectionId, srcIdx, targetIdx)
 	}
 
 	/**
 	 * Remove tag from library, compacting sibling `idx` with `removeItemArr`, then refresh map + `currTags`.
 	 * Call after stripping that tag from items (or before — tag must still exist in `libraryTags` when this runs).
 	 */
-	deleteTagAndReindex(tagId: string) {
+	async deleteTagAndReindex(tagId: string) {
 		const meta = libraryTags.byId[tagId]
 		if (!meta) return
 		const cid = meta.collectionId
 		const removedIdx = meta.idx ?? 0
 		const arr = this.collectionTagClonesForReorder(cid)
 		const { updated } = removeItemArr({ array: arr, idx: removedIdx })
+		if (!use_mocks) {
+			if (!db.isAvailable) {
+				throw new Error('deleteTagAndReindex: live mode enabled but DB is not available')
+			}
+			await db.tags.delete(tagId)
+		}
 		deleteLibraryTag(tagId)
 		this.applyIdxPatches(updated)
+		if (!use_mocks) {
+			for (const u of updated) {
+				await db.tags.patch(u.id, { idx: u.idx })
+			}
+			const orderAfter = this.collectionTagClonesForReorder(cid)
+			await db.tags.replaceOrder(
+				cid,
+				orderAfter.map((t, i) => ({ tagId: t.id, sortIndex: i }))
+			)
+		}
 		this.rebuildIndicesMapFromLibrary()
 		if (this.selectedCollectionId === cid) this.syncTagsFromLibrary()
 	}
 
 	/** Bump sibling `idx` with `insertItemArr`, then `upsertLibraryTag` (call instead of raw upsert for toolbar order). */
-	registerNewTagOrder(tag: Tag) {
+	async registerNewTagOrder(tag: Tag) {
 		const cid = tag.collectionId
 		const arr = this.collectionTagClonesForReorder(cid)
 		const item: TagRow = {
@@ -426,6 +644,20 @@ export class Global {
 			patchLibraryTag(row.id, { idx: row.idx })
 		}
 		upsertLibraryTag({ ...tag, idx: finalNew.idx })
+		if (!use_mocks) {
+			if (!db.isAvailable) {
+				throw new Error('registerNewTagOrder: live mode enabled but DB is not available')
+			}
+			await db.tags.insert({ ...tag, idx: finalNew.idx })
+			for (const row of next) {
+				if (row.id === tag.id) continue
+				await db.tags.patch(row.id, { idx: row.idx })
+			}
+			await db.tags.replaceOrder(
+				cid,
+				next.map((r, i) => ({ tagId: String(r.id), sortIndex: i }))
+			)
+		}
 		this.rebuildIndicesMapFromLibrary()
 		if (this.selectedCollectionId === cid) this.syncTagsFromLibrary()
 	}
@@ -448,7 +680,9 @@ export class Global {
 }
 
 export const global = new Global()
-global.setCollection(global.selectedCollectionId)
+if (use_mocks) {
+	global.setCollection(global.selectedCollectionId)
+}
 global.syncItemOrderCache()
 global.syncFavoriteOrderCache()
 global.syncCollectionOrderCache()

@@ -1,3 +1,4 @@
+import { use_mocks } from '$lib/env'
 import { nextIdxForAppend } from '$lib/lib/collections'
 import { isPortraitReelOrTikTokUrl, type FetchedContentMetadata } from '$lib/lib/fetch-content'
 import { mockContentItems } from '$lib/mocks/library'
@@ -32,7 +33,9 @@ function sourceFromMetadata(meta: FetchedContentMetadata): ContentSource {
 
 /** Session list for the library grid; ContentCard mutates `items` (e.g. delete). */
 export const libraryContent = $state({
-	items: mockContentItems.map((i) => ({ ...i })) as ContentItem[]
+	items: (use_mocks
+		? mockContentItems.map((i) => ({ ...i }))
+		: []) as ContentItem[]
 })
 
 export function removeLibraryItem(id: string) {

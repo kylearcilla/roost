@@ -1,9 +1,11 @@
 <script lang="ts">
 	import BannerImg from '$lib/components/BannerImg.svelte'
 	import FloatInput from '$lib/components/FloatInput.svelte'
+	import { ELECTRON_CHROME_INSET_CTX } from '$lib/electronChromeInsetContext'
 	import { extractUrl } from '$lib/lib/collection-sources'
 	import { DEFAULT_IMG_UPLOAD_CONSTRAINTS, validateImgURL } from '$lib/lib/fetch-content'
 	import { global } from '$lib/lib/global.svelte'
+	import { getContext } from 'svelte'
 	import { libraryContent } from '$lib/libraryContent.svelte'
 
 	type Props = {
@@ -11,6 +13,8 @@
 		homeItemCount?: number
 	}
 	let { homeItemCount }: Props = $props()
+
+	const electronChromeInset = getContext<{ active: boolean } | undefined>(ELECTRON_CHROME_INSET_CTX)
 
 	const HEADER_IMG_FLOAT_ID = 'header-collection-wallpaper-float'
 
@@ -38,6 +42,9 @@
 	let titleEl = $state<HTMLDivElement | null>(null)
 	let subtitleEl = $state<HTMLDivElement | null>(null)
 	let headerHovered = $state(false)
+	const hideHeaderWallpaperUi = $derived(
+		Boolean(electronChromeInset?.active) && !onHomePage
+	)
 	let imgFloatHidden = $state(true)
 	let imgLinkDraft = $state('')
 	let imgSubmitJitter = $state(false)
@@ -45,7 +52,17 @@
 	let imgSubmitValidating = $state(false)
 	let imgFileInputEl = $state<HTMLInputElement | null>(null)
 
-	const showAddWallpaper = $derived((headerHovered || !imgFloatHidden) && !hasWallpaper)
+	const showAddWallpaper = $derived(
+		!hideHeaderWallpaperUi && (headerHovered || !imgFloatHidden) && !hasWallpaper
+	)
+
+	$effect(() => {
+		if (!hideHeaderWallpaperUi) return
+		imgFloatHidden = true
+		imgLinkDraft = ''
+		imgSubmitShowArrow = false
+		headerHovered = false
+	})
 
 	$effect(() => {
 		const t = selectedCollection.headline ?? selectedCollection.name
@@ -67,21 +84,21 @@
 		imgSubmitShowArrow = false
 	})
 
-	function commitCollectionTitle(raw: string) {
+	async function commitCollectionTitle(raw: string) {
 		const next = raw.replace(/\s+/g, ' ').trim()
 		const defaultName = selectedCollection.name.trim()
 		const newHeadline =
 			!next || next === defaultName ? undefined : next
 		const prev = (selectedCollection.headline ?? '').trim()
 		if ((newHeadline ?? '') === prev) return
-		global.updateCollection({ ...selectedCollection, headline: newHeadline })
+		await global.updateCollection({ ...selectedCollection, headline: newHeadline })
 	}
 
-	function commitCollectionSubtitle(raw: string) {
+	async function commitCollectionSubtitle(raw: string) {
 		const next = raw.replace(/\s+/g, ' ').trim()
 		const cur = (selectedCollection.subtitle ?? '').trim()
 		if (next === cur) return
-		global.updateCollection({ ...selectedCollection, subtitle: next || undefined })
+		await global.updateCollection({ ...selectedCollection, subtitle: next || undefined })
 	}
 
 	function closeWallpaperFloat() {
@@ -101,23 +118,23 @@
 		window.setTimeout(() => (imgSubmitJitter = false), 320)
 	}
 
-	function applyWallpaperHref(href: string) {
-		global.updateCollection({
+	async function applyWallpaperHref(href: string) {
+		await global.updateCollection({
 			...selectedCollection,
 			wallpaper: { type: 'image', url: href, dims: 'auto' },
 			wallpaperFocusY: undefined
 		})
 	}
 
-	function commitWallpaperFocusY(y: number) {
-		global.updateCollection({
+	async function commitWallpaperFocusY(y: number) {
+		await global.updateCollection({
 			...selectedCollection,
 			wallpaperFocusY: y
 		})
 	}
 
-	function removeBannerWallpaper() {
-		global.updateCollection({
+	async function removeBannerWallpaper() {
+		await global.updateCollection({
 			...selectedCollection,
 			wallpaper: null,
 			wallpaperFocusY: undefined
@@ -128,12 +145,12 @@
 		imgFileInputEl?.click()
 	}
 
-	function onWallpaperFilePicked(e: Event) {
+	async function onWallpaperFilePicked(e: Event) {
 		const el = e.currentTarget as HTMLInputElement
 		const file = el.files?.[0]
 		el.value = ''
 		if (!file || !file.type.startsWith('image/')) return
-		applyWallpaperHref(URL.createObjectURL(file))
+		await applyWallpaperHref(URL.createObjectURL(file))
 		closeWallpaperFloat()
 	}
 
@@ -158,14 +175,14 @@
 		}
 		const href = again.href
 		if (href.startsWith('blob:') || href.startsWith('data:')) {
-			applyWallpaperHref(href)
+			await applyWallpaperHref(href)
 			closeWallpaperFloat()
 			return
 		}
 		imgSubmitValidating = true
 		try {
 			await validateImgURL({ url: href, constraints: DEFAULT_IMG_UPLOAD_CONSTRAINTS })
-			applyWallpaperHref(href)
+			await applyWallpaperHref(href)
 			closeWallpaperFloat()
 		} catch (e) {
 			if (e instanceof DOMException && e.name === 'AbortError') return
@@ -177,6 +194,7 @@
 	}
 
 	function onHeaderWindowKeydown(e: KeyboardEvent) {
+		if (hideHeaderWallpaperUi) return
 		if (e.key !== 'Escape') return
 		if (!imgFloatHidden) {
 			e.preventDefault()
@@ -222,8 +240,8 @@
 					<BannerImg
 						src={bannerSrc}
 						center={wallpaperFocusY}
-						onCenterChange={commitWallpaperFocusY}
-						onRemove={removeBannerWallpaper}
+						onCenterChange={(y) => void commitWallpaperFocusY(y)}
+						onRemove={() => void removeBannerWallpaper()}
 					/>
 				{/key}
 			</div>
@@ -233,8 +251,12 @@
 				class="lib-header__surface"
 				role="group"
 				aria-label="Library header"
-				onmouseenter={() => (headerHovered = true)}
-				onmouseleave={() => (headerHovered = false)}
+				onmouseenter={() => {
+					if (!hideHeaderWallpaperUi) headerHovered = true
+				}}
+				onmouseleave={() => {
+					headerHovered = false
+				}}
 			>
 				<div class="lib-header__titles">
 					<div class="lib-header__heading-row">
@@ -247,7 +269,7 @@
 							aria-label="Collection title"
 							data-placeholder="Add a title…"
 							onblur={(e) =>
-								commitCollectionTitle((e.currentTarget as HTMLHeadingElement).innerText)}
+								void commitCollectionTitle((e.currentTarget as HTMLHeadingElement).innerText)}
 						></h1>
 					</div>
 					<div
@@ -260,52 +282,58 @@
 						aria-label="Collection description"
 						data-placeholder="Add a description…"
 						onblur={(e) =>
-							commitCollectionSubtitle((e.currentTarget as HTMLDivElement).innerText)}
+							void commitCollectionSubtitle((e.currentTarget as HTMLDivElement).innerText)}
 					></div>
 				</div>
-				<div class="lib-header__right">
-					<button
-						type="button"
-						class="lib-header__wallpaper-btn"
-						class:lib-header__wallpaper-btn--visible={showAddWallpaper}
-						onclick={(e) => {
-							e.stopPropagation()
-							openWallpaperFloat()
-						}}
-					>
-						Add Wallpaper
-					</button>
-					{@render userInfo()}
-				</div>
+				{#if !hideHeaderWallpaperUi}
+					<div class="lib-header__right">
+						<button
+							type="button"
+							class="lib-header__wallpaper-btn"
+							class:lib-header__wallpaper-btn--visible={showAddWallpaper}
+							onclick={(e) => {
+								e.stopPropagation()
+								openWallpaperFloat()
+							}}
+						>
+							Add Wallpaper
+						</button>
+						{@render userInfo()}
+					</div>
+				{/if}
 			</div>
-			<FloatInput
-				dmenuId={HEADER_IMG_FLOAT_ID}
-				bind:hidden={imgFloatHidden}
-				bind:value={imgLinkDraft}
-				inputType="imgUrl"
-				position={{ top: 50, right: 20 }}
-				placeholder="Paste or type image URL…"
-				onClose={closeWallpaperFloat}
-				onPress={submitWallpaperFloat}
-				submitReady={Boolean(imgSubmitShowArrow && extractUrl(imgLinkDraft))}
-				submitJitter={imgSubmitJitter}
-				onImgUpload={openWallpaperFilePicker}
-				isDisabled={imgSubmitValidating}
-			/>
+			{#if !hideHeaderWallpaperUi}
+				<FloatInput
+					dmenuId={HEADER_IMG_FLOAT_ID}
+					bind:hidden={imgFloatHidden}
+					bind:value={imgLinkDraft}
+					inputType="imgUrl"
+					position={{ top: 50, right: 20 }}
+					placeholder="Paste or type image URL…"
+					onClose={closeWallpaperFloat}
+					onPress={submitWallpaperFloat}
+					submitReady={Boolean(imgSubmitShowArrow && extractUrl(imgLinkDraft))}
+					submitJitter={imgSubmitJitter}
+					onImgUpload={openWallpaperFilePicker}
+					isDisabled={imgSubmitValidating}
+				/>
+			{/if}
 		</header>
 	</div>
 {/if}
 
 
-<input
-	type="file"
-	accept="image/*"
-	class="lib-header__wallpaper-file"
-	aria-hidden="true"
-	tabindex="-1"
-	bind:this={imgFileInputEl}
-	onchange={onWallpaperFilePicked}
-/>
+{#if !hideHeaderWallpaperUi}
+	<input
+		type="file"
+		accept="image/*"
+		class="lib-header__wallpaper-file"
+		aria-hidden="true"
+		tabindex="-1"
+		bind:this={imgFileInputEl}
+		onchange={onWallpaperFilePicked}
+	/>
+{/if}
 
 <style lang="scss">
 	@use '../scss/mixins.scss' as *;
@@ -347,7 +375,6 @@
 			align-items: flex-start;
 			justify-content: space-between;
             position: relative;
-			gap: 16px;
 			width: 100%;
 		}
 		&__banner {

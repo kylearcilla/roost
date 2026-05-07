@@ -1,6 +1,6 @@
 import { testTags } from '$lib/mocks/tags'
 
-export const mockUser: LibraryUser = {
+export const mockUser: User = {
 	id: 'u1',
 	displayName: 'Georgina Huang',
 	avatarUrl: 'https://i.pinimg.com/736x/ed/05/ae/ed05aececd1ee5f289a4f43eeb5afa4f.jpg'

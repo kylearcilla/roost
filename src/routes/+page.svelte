@@ -12,6 +12,7 @@
 		COL_SIZES,
 		COLOR_SWATCHES,
 		GRID_COLUMN_WIDTHS,
+		getMaskedGradientStyle,
 		gridColumnSizeAtIndex,
 		indexForGridColumnSize
 	} from '$lib/lib/utils'
@@ -51,7 +52,7 @@
 		if (global.onHomePage || !global.selectedCollectionId) return
 		const tab = global.currFilterTab
 		const id = tab === 'all' ? global.selectedCollectionId : tab
-		global.setColSize(id, gridColumnSizeAtIndex(gridColumnSizeIndex))
+		void global.setColSize(id, gridColumnSizeAtIndex(gridColumnSizeIndex))
 	})
 
 	function onSidebarNav(id: string) {
@@ -80,6 +81,7 @@
 	let currentTab = $derived(global.currFilterTab)
 	let currentCid = $derived(global.selectedCollectionId)
 	let contentDropZoneEl = $state<HTMLDivElement | null>(null)
+	let libToolbarTabsEl = $state<HTMLDivElement | null>(null)
 	let contentFileDropOverlay = $state(false)
 	let currTags = $derived(global.currTags)
 
@@ -163,9 +165,37 @@
 			idx: t.idx ?? 0
 		}))
 	)
-	const pageTitle = $derived(
-		global.onHomePage ? 'All Items' : (shellCollection.headline ?? shellCollection.name)
-	)
+
+	function applyLibToolbarTabsMask(el: HTMLElement) {
+		const { styling } = getMaskedGradientStyle(el, { isVertical: false })
+		for (const decl of styling.split(';')) {
+			const t = decl.trim()
+			if (!t) continue
+			const c = t.indexOf(':')
+			if (c === -1) continue
+			el.style.setProperty(t.slice(0, c).trim(), t.slice(c + 1).trim())
+		}
+	}
+
+	$effect(() => {
+		if (global.onHomePage) return
+		void tabs
+		void currentCid
+		const el = libToolbarTabsEl
+		if (!el) return
+		const run = () => applyLibToolbarTabsMask(el)
+		run()
+		void tick().then(run)
+		const ro = new ResizeObserver(run)
+		ro.observe(el)
+		el.addEventListener('scroll', run, { passive: true })
+		return () => {
+			ro.disconnect()
+			el.removeEventListener('scroll', run)
+			el.style.removeProperty('mask-image')
+			el.style.removeProperty('-webkit-mask-image')
+		}
+	})
 	const activeTagMeta = $derived.by(() => {
 		if (currentTab === 'all') return null
 		return currTags.find((t) => t.id === currentTab) ?? null
@@ -253,7 +283,7 @@
 						.filter((t) => t.collectionId === currentCid)
 						.map((t) => t.idx ?? -1)
 				)
-			global.registerNewTagOrder({
+			void global.registerNewTagOrder({
 				id,
 				name: next,
 				color: { ...tagEditColor },
@@ -313,7 +343,7 @@
 			...item,
 			tags: item.tags.filter((t: string) => t !== tagId)
 		}))
-		global.deleteTagAndReindex(tagId)
+		void global.deleteTagAndReindex(tagId)
 		if (currentTab === tagId) global.currFilterTab = 'all'
 	}
 
@@ -336,7 +366,7 @@
 		if (!srcId || !tgtId || srcId === tgtId) return
 		const srcIdx = libraryTags.byId[srcId]?.idx ?? 0
 		const targetIdx = libraryTags.byId[tgtId]?.idx ?? 0
-		global.reorderTagsInCurrentCollection(srcIdx, targetIdx)
+		void global.reorderTagsInCurrentCollection(srcIdx, targetIdx)
 	}
 	function handleTabContextChoice(tab: ToolbarTab, label: string, itemId?: string) {
 		if (itemId === 'edit' || label === 'Edit') openEditTab(tab)
@@ -452,7 +482,7 @@
 <svelte:window onkeydown={onTagEditFloatKeydown} ondragend={onWindowFileDragEnd} />
 
 <svelte:head>
-	<title>roost — {pageTitle}</title>
+	<title>Roost</title>
 </svelte:head>
 
 <div class="home">
@@ -469,7 +499,7 @@
 		{#if !global.onHomePage}
 		<div class="lib-toolbar">
 			<div class="lib-toolbar__tabs-container">
-				<div class="lib-toolbar__tabs" role="list">
+				<div bind:this={libToolbarTabsEl} class="lib-toolbar__tabs" role="list">
 					<div role="listitem" class="lib-toolbar__tab-all">
 						<button
 							type="button"
@@ -591,22 +621,31 @@
 	@use '../scss/mixins.scss' as *;
 
 	.home {
-		height: 100vh;
+		flex: 1;
+		min-height: 0;
 		width: 100%;
 		max-width: 100vw;
 		display: flex;
 		background-color: var(--bg-color);
+		overflow: hidden;
 
 		&__content {
 			width: calc(100% - 200px);
+			// take up entire space
 			flex: 1;
-			min-width: 0;
-			overflow-y: auto;
-			padding: var(--main-frame-padding-top) var(--main-frame-padding-sides) 48px var(--main-frame-padding-sides);
+			display: flex;
+			flex-direction: column;
+			padding: var(--main-frame-padding-top) var(--main-frame-padding-sides) 0px var(--main-frame-padding-sides);
 		}
 		&__content-drop {
 			position: relative;
-			min-height: 200px;
+			// take up entire space + allow to shrink
+			flex: 1;
+			min-height: 0;
+			overflow-y: auto;
+			overflow-x: hidden;
+			overscroll-behavior: contain;
+			padding-bottom: 30px;
 		}
 		&__content-drop__overlay {
 			position: absolute;
@@ -631,7 +670,6 @@
 			width: 72px;
 			height: 72px;
 			opacity: 0.35;
-
 		}
 		&__content-drop__label {
 			margin: 0;
@@ -692,15 +730,23 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		flex-wrap: wrap;
 		gap: 12px;
 		margin-bottom: 10px;
 
 		&__tabs {
 			display: flex;
-			flex-wrap: wrap;
 			gap: 3px;
-			margin-left: -3px;
+			overflow: auto;
+			padding: 4px 0px 4px 4px;
+			margin-left: -4px;
+			scrollbar-width: none;
+			mask-repeat: no-repeat;
+			mask-size: 100% 100%;
+			-webkit-mask-repeat: no-repeat;
+			-webkit-mask-size: 100% 100%;
+			&::-webkit-scrollbar {
+				display: none;
+			}
 		}
 		&__tabs-container {
 			display: flex;

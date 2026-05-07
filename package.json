@@ -6,30 +6,42 @@
 	"main": "electron/main.cjs",
 	"scripts": {
 		"dev": "vite dev",
+		"dev:live": "VITE_USE_MOCK_DATA=false vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
+		"electron:rebuild": "electron-rebuild -f -w better-sqlite3 && node electron/scripts/macos-native-sign.mjs",
+		"db:rebuild:for-node": "npm rebuild better-sqlite3",
+		"db:generate": "npm run db:rebuild:for-node && node electron/scripts/run-drizzle-kit-app-db.mjs generate",
+		"db:migrate": "npm run db:rebuild:for-node && node electron/scripts/run-drizzle-kit-app-db.mjs migrate",
+		"db:studio": "npm run db:rebuild:for-node && node electron/scripts/run-drizzle-kit-app-db.mjs migrate && node electron/scripts/run-drizzle-kit-app-db.mjs studio",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:electron": "tsc -p electron/tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-		"electron": "electron .",
-		"electron:dev": "concurrently -k \"vite dev\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_DEV=1 electron .\"",
-		"electron:build": "npm run build && electron ."
+		"electron": "npm run electron:rebuild && electron .",
+		"electron:dev": "node electron/scripts/dev.mjs",
+		"electron:dev:live": "VITE_USE_MOCK_DATA=false node electron/scripts/dev.mjs",
+		"electron:dev:rebuild": "node electron/scripts/dev.mjs --rebuild",
+		"electron:unquarantine": "xattr -cr node_modules/electron",
+		"electron:build": "npm run build && npm run electron:rebuild && electron ."
 	},
 	"devDependencies": {
-		"concurrently": "^9.2.1",
-		"cross-env": "^10.1.0",
-		"electron": "^39.2.7",
+		"@electron/rebuild": "^4.0.2",
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.57.0",
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
+		"drizzle-kit": "^0.31.10",
+		"electron": "^39.2.7",
 		"sass": "^1.99.0",
 		"svelte": "^5.55.2",
 		"svelte-check": "^4.4.6",
 		"typescript": "^6.0.2",
-		"vite": "^8.0.7",
-		"wait-on": "^9.0.3"
+		"vite": "^8.0.7"
 	},
 	"dependencies": {
+		"better-sqlite3": "^12.5.0",
+		"drizzle-orm": "^0.45.2",
+		"jiti": "^2.7.0",
 		"masonry-layout": "^4.2.2"
 	}
 }

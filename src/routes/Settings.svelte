@@ -30,14 +30,14 @@
 		nameDraft = global.user.displayName
 	})
 
-	function commitName() {
+	async function commitName() {
 		isNameFocused = false
 		const next = nameDraft.trim()
 		if (!next) {
 			nameDraft = global.user.displayName
 			return
 		}
-		global.updateUser({ displayName: next })
+		await global.updateUser({ displayName: next })
 		nameDraft = next
 	}
 
@@ -78,7 +78,7 @@
 		if (!file || !file.type.startsWith('image/')) return
 		const href = URL.createObjectURL(file)
 		avatarUrl = href
-		global.updateUser({ avatarUrl: href })
+		void global.updateUser({ avatarUrl: href })
 	}
 </script>
 
@@ -145,7 +145,7 @@
 									spellcheck="false"
 									bind:value={nameDraft}
                                     onfocus={() => isNameFocused = true}
-									onblur={commitName}
+									onblur={() => void commitName()}
 									onkeydown={(e) => {
 										if (e.key === 'Enter') {
 											;(e.currentTarget as HTMLInputElement).blur()

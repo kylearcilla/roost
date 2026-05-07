@@ -22,20 +22,22 @@
 		onNavSelect
 	}: { navItems: SidebarNavItem[]; onNavSelect?: (id: string) => void } = $props()
 
-	const favoritesSorted = $derived(global.sortedFavorites)
-	const collectionsSorted = $derived(global.sortedCollections)
-
+	
 	let collectionsRef: HTMLDivElement | undefined = $state()
 	let favoritesRef: HTMLDivElement | undefined = $state()
 	let favSrcId = $state<string | null>(null)
 	let favTgtId = $state<string | null>(null)
-
+			
 	let collectionFloatHidden = $state(true)
-	let collectionFloatPos = $state({ top: 0, left: 0 })
 	let collectionDraft = $state('')
 	let collectionInputEl = $state<HTMLInputElement | null>(null)
-	/** `null` while float closed or in “add” mode; set when editing an existing row. */
 	let collectionEditingCol = $state<Collection | null>(null)
+
+	const bySidebarIdx = (a: { id: string; idx?: number }, b: { id: string; idx?: number }) =>
+		(a.idx ?? 0) - (b.idx ?? 0) || a.id.localeCompare(b.id)
+
+	let collections = $derived([...global.collections].sort(bySidebarIdx))
+	let favorites = $derived([...global.favorites].sort(bySidebarIdx))
 
 	let srcId = $state<string | null>(null)
 	let targetId = $state<string | null>(null)
@@ -55,7 +57,7 @@
 		if (elem) favTgtId = elem.getAttribute('data-id')
 	}
 
-	function onFavoriteDragEnd() {
+	async function onFavoriteDragEnd() {
 		if (favSrcId && favTgtId && favSrcId !== favTgtId) {
 			const arr = [...global.favorites].sort(
 				(a, b) => (a.idx ?? 0) - (b.idx ?? 0) || a.id.localeCompare(b.id)
@@ -64,7 +66,7 @@
 			const targetIx = arr.findIndex((f) => f.id === favTgtId)
 			if (srcIx !== -1 && targetIx !== -1) {
 				const { newArray } = reorderArrayStably({ array: arr, srcIdx: srcIx, targetIdx: targetIx })
-				global.applyFavoritesOrder(newArray)
+				await global.applyFavoritesOrder(newArray)
 			}
 		}
 		favoritesRef?.removeEventListener('dragover', onFavoriteDrag)
@@ -107,9 +109,6 @@
 	}
 
 	function addCollection(e: MouseEvent) {
-		const el = e.currentTarget as HTMLElement
-		const r = el.getBoundingClientRect()
-		collectionFloatPos = { top: r.bottom + 6, left: r.left }
 		collectionEditingCol = null
 		collectionDraft = ''
 		collectionFloatHidden = false
@@ -119,12 +118,11 @@
 	function openEditCollection(col: Collection) {
 		collectionEditingCol = col
 		collectionDraft = collectionInputValue(col)
-		collectionFloatPos = { top: cursorPos.top + 8, left: cursorPos.left }
 		collectionFloatHidden = false
 		void tick().then(() => collectionInputEl?.focus())
 	}
 
-	function submitCollectionFloat() {
+	async function submitCollectionFloat() {
 		const v = collectionDraft.trim()
 		if (!v) return
 
@@ -136,11 +134,11 @@
 				closeCollectionFloat()
 				return
 			}
-			global.updateCollection({ ...col, ...parsed })
+			await global.updateCollection({ ...col, ...parsed })
 		} else {
 			const parsed = getName(v)
 			const id = crypto.randomUUID()
-			global.addCollection({
+			await global.addCollection({
 				id,
 				...parsed,
 				idx: global.collections.length,
@@ -160,12 +158,12 @@
 		}
 	}
 
-	function addCollectionToFavorites(col: Collection) {
-		global.addFavoriteFromCollection(col)
+	async function addCollectionToFavorites(col: Collection) {
+		await global.addFavoriteFromCollection(col)
 	}
 
-	function handleFavoriteContextChoice(fav: FavoriteFolder, label: string, itemId?: string) {
-		if (itemId === 'remove' || label === 'Remove') global.removeFavoriteAndReindex(fav.id)
+	async function handleFavoriteContextChoice(fav: FavoriteFolder, label: string, itemId?: string) {
+		if (itemId === 'remove' || label === 'Remove') await global.removeFavoriteAndReindex(fav.id)
 	}
 
 	function openFavoriteContextMenu(e: MouseEvent, fav: FavoriteFolder) {
@@ -189,10 +187,10 @@
 		if (fav.collectionId) global.setCollection(fav.collectionId)
 	}
 
-	function handleCollectionContextChoice(col: Collection, label: string, itemId?: string) {
+	async function handleCollectionContextChoice(col: Collection, label: string, itemId?: string) {
 		if (itemId === 'edit' || label === 'Edit') openEditCollection(col)
-		else if (itemId === 'favorite' || label === 'Favorite') addCollectionToFavorites(col)
-		else if (itemId === 'delete' || label === 'Delete') global.deleteCollection(col.id)
+		else if (itemId === 'favorite' || label === 'Favorite') await addCollectionToFavorites(col)
+		else if (itemId === 'delete' || label === 'Delete') await global.deleteCollection(col.id)
 	}
 
 	function openCollectionContextMenu(e: MouseEvent, col: Collection) {
@@ -212,7 +210,7 @@
 		})
 	}
 
-	function onCollectionDragEnd() {
+	async function onCollectionDragEnd() {
 		if (srcId && targetId && srcId !== targetId) {
 			const arr = [...global.collections].sort(
 				(a, b) => (a.idx ?? 0) - (b.idx ?? 0) || a.id.localeCompare(b.id)
@@ -221,7 +219,7 @@
 			const targetIx = arr.findIndex((c) => c.id === targetId)
 			if (srcIx !== -1 && targetIx !== -1) {
 				const { newArray } = reorderArrayStably({ array: arr, srcIdx: srcIx, targetIdx: targetIx })
-				global.applyCollectionsOrder(newArray)
+				await global.applyCollectionsOrder(newArray)
 			}
 		}
 		if (collectionsRef) {
@@ -267,7 +265,7 @@
 			</span>
 		</div>
 		<div class="sidebar__section-body" bind:this={favoritesRef} role="list">
-			{#each favoritesSorted as fav (fav.id)}
+			{#each favorites as fav (fav.id)}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div
 					class="sidebar__favorite-container drop-top-border"
@@ -305,7 +303,7 @@
 			</button>
 		</div>
 		<div class="sidebar__section-body" bind:this={collectionsRef} role="list">
-			{#each collectionsSorted as col (col.id)}
+			{#each collections as col (col.id)}
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div
 					class="sidebar__collection-container drop-top-border"
@@ -358,7 +356,7 @@
 		height: 100vh;
 		background: var(--sidebar-bg);
 		overflow-y: auto;
-		padding: 10px 16px 28px 16px;
+		padding: 9px 16px 28px 16px;
 
 		--margin-right: -6px;
 		--item-width: calc(100% - 5px);
