@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, net, shell, protocol, session } = require('electron')
+const { app, BrowserWindow, ipcMain, net, shell, protocol } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const crypto = require('node:crypto')
@@ -6,10 +6,27 @@ const { Buffer } = require('node:buffer')
 
 app.setName('Roost')
 
-/** Must run before `app.ready` so renderer can load `roost-media://` from `http` dev server (Chromium blocks `file://`). */
+/**
+ * Vite dev: unpackaged only (`npm run electron:dev` sets `ELECTRON_DEV=1`).
+ * Never treat a packaged `.app` as dev — Terminal can inherit `ELECTRON_DEV` from your shell; Finder does not,
+ * so you’d get localhost from CLI and `app://` from double‑click (looks like “binary works, app doesn’t”).
+ */
+const dev =
+	!app.isPackaged &&
+	(process.env.ELECTRON_DEV === '1' || process.argv.includes('--dev'))
+
+/**
+ * Must run before `app.ready`. Call only once — Electron allows a single `registerSchemesAsPrivileged`.
+ * - `roost-media`: local media from disk (see preload).
+ * - `app`: serve `build/` like an origin so `/_app/...` in SvelteKit’s SPA fallback works (broken under `file://`).
+ */
 protocol.registerSchemesAsPrivileged([
 	{
 		scheme: 'roost-media',
+		privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true }
+	},
+	{
+		scheme: 'app',
 		privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true }
 	}
 ])
@@ -142,10 +159,21 @@ function collectionMediaDirCandidates(collectionId, collectionName) {
 	return out
 }
 
-/** True if `absFile` is `dir` or a file/dir inside `dir`. */
+/**
+ * macOS APFS / Windows NTFS are case-insensitive but case-preserving, and `fs.realpathSync` does **not**
+ * normalize case. Strings can disagree (`…/Roost/…` vs on-disk `…/roost/…`) while pointing at the same file —
+ * happens here when `app.setName('Roost')` flips userData casing but the older `roost` dir already exists.
+ * Without this, every `roost-media://` request 404s with `ERR_FILE_NOT_FOUND`.
+ */
+const PATH_CASE_INSENSITIVE = process.platform === 'darwin' || process.platform === 'win32'
+function normalizeCase(p) {
+	return PATH_CASE_INSENSITIVE ? p.toLowerCase() : p
+}
+
+/** True if `absFile` is `dir` or a file/dir inside `dir` (case-insensitive on darwin/win32). */
 function pathIsUnderDir(absFile, dir) {
-	const d = path.resolve(dir)
-	const f = path.resolve(absFile)
+	const d = normalizeCase(path.resolve(dir))
+	const f = normalizeCase(path.resolve(absFile))
 	const rel = path.relative(d, f)
 	return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
 }
@@ -153,14 +181,32 @@ function pathIsUnderDir(absFile, dir) {
 /** Path must resolve under `userData/media`, or mistaken earlier `userData/roost/media` (double `roost`). */
 function isFileInsideManagedMedia(absolutePath) {
 	const userData = app.getPath('userData')
-	const roots = [
-		path.resolve(path.join(userData, 'media')),
-		path.resolve(path.join(userData, 'roost', 'media'))
+	const baseRoots = [
+		path.join(userData, 'media'),
+		path.join(userData, 'roost', 'media')
 	]
-	const resolved = path.resolve(absolutePath)
-	for (const mediaRoot of roots) {
-		const rel = path.relative(mediaRoot, resolved)
-		if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return true
+	const roots = baseRoots.map((r) => {
+		const resolved = path.resolve(r)
+		try {
+			return normalizeCase(fs.realpathSync.native(resolved))
+		} catch {
+			return normalizeCase(resolved)
+		}
+	})
+	const raw = normalizeCase(path.resolve(absolutePath))
+	const candidates = [raw]
+	try {
+		if (fs.existsSync(absolutePath)) {
+			candidates.push(normalizeCase(fs.realpathSync.native(path.resolve(absolutePath))))
+		}
+	} catch {
+		/* missing or not yet on disk */
+	}
+	for (const p of candidates) {
+		for (const mediaRoot of roots) {
+			const rel = path.relative(mediaRoot, p)
+			if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return true
+		}
 	}
 	return false
 }
@@ -184,14 +230,139 @@ function absolutePathFromRoostMediaUrl(requestUrl) {
 function registerRoostMediaProtocol() {
 	if (roostMediaProtocolRegistered) return
 	roostMediaProtocolRegistered = true
-	session.defaultSession.protocol.registerFileProtocol('roost-media', (request, callback) => {
-		const raw = absolutePathFromRoostMediaUrl(request.url)
-		const resolved = raw ? path.resolve(raw) : ''
-		if (!resolved || !isFileInsideManagedMedia(resolved)) {
-			callback({ error: -6 })
-			return
+	/** Same as `app://` build assets: explicit MIME — `registerFileProtocol` often yields wrong type from `app://` pages → broken `<img>` / `<video>`. */
+	protocol.handle('roost-media', async (request) => {
+		try {
+			if (request.method !== 'GET' && request.method !== 'HEAD') {
+				return new Response(null, { status: 405 })
+			}
+			const raw = absolutePathFromRoostMediaUrl(request.url)
+			const resolved = raw ? path.resolve(raw) : ''
+			if (!resolved || !isFileInsideManagedMedia(resolved)) {
+				return new Response(null, { status: 403 })
+			}
+			let filePath = resolved
+			try {
+				filePath = fs.realpathSync.native(resolved)
+			} catch {
+				return new Response(null, { status: 404 })
+			}
+			if (!isFileInsideManagedMedia(filePath)) {
+				return new Response(null, { status: 403 })
+			}
+			const st = fs.statSync(filePath)
+			if (!st.isFile()) {
+				return new Response(null, { status: 404 })
+			}
+			const mime = mimeForStaticFile(filePath)
+			if (request.method === 'HEAD') {
+				return new Response(null, {
+					status: 200,
+					headers: { 'Content-Type': mime, 'Content-Length': String(st.size) }
+				})
+			}
+			const body = await fs.promises.readFile(filePath)
+			return new Response(body, { status: 200, headers: { 'Content-Type': mime } })
+		} catch {
+			return new Response(null, { status: 500 })
 		}
-		callback({ path: resolved })
+	})
+}
+
+let appStaticProtocolRegistered = false
+
+function getStaticBuildDir() {
+	return path.resolve(path.join(__dirname, '..', 'build'))
+}
+
+/** Explicit types: `net.fetch(file://…)` often yields `text/plain` for `.html` / `.js`, so the document shows as raw source. */
+function mimeForStaticFile(filePath) {
+	const ext = path.extname(filePath).toLowerCase()
+	const m = {
+		'.html': 'text/html; charset=utf-8',
+		'.js': 'text/javascript; charset=utf-8',
+		'.mjs': 'text/javascript; charset=utf-8',
+		'.css': 'text/css; charset=utf-8',
+		'.json': 'application/json; charset=utf-8',
+		'.svg': 'image/svg+xml; charset=utf-8',
+		'.webp': 'image/webp',
+		'.png': 'image/png',
+		'.jpg': 'image/jpeg',
+		'.jpeg': 'image/jpeg',
+		'.gif': 'image/gif',
+		'.ico': 'image/x-icon',
+		'.avif': 'image/avif',
+		'.mp4': 'video/mp4',
+		'.webm': 'video/webm',
+		'.mov': 'video/quicktime',
+		'.woff2': 'font/woff2',
+		'.woff': 'font/woff',
+		'.ttf': 'font/ttf',
+		'.txt': 'text/plain; charset=utf-8',
+		'.map': 'application/json; charset=utf-8',
+		'.webmanifest': 'application/manifest+json; charset=utf-8'
+	}
+	return m[ext] || 'application/octet-stream'
+}
+
+/** `app://roost/<path>` → read `build/<path>` (SPA fallback → `index.html`), return bytes + MIME to the renderer. */
+function registerAppStaticProtocol() {
+	if (appStaticProtocolRegistered) return
+	appStaticProtocolRegistered = true
+	const staticRoot = getStaticBuildDir()
+	protocol.handle('app', async (request) => {
+		try {
+			if (request.method !== 'GET' && request.method !== 'HEAD') {
+				return new Response(null, { status: 405 })
+			}
+			const u = new URL(request.url)
+			if (u.hostname.toLowerCase() !== 'roost') {
+				return new Response('Not found', { status: 404 })
+			}
+			let pathname = u.pathname || '/'
+			if (pathname === '/' || pathname === '') pathname = '/index.html'
+			const rel = pathname.replace(/^\/+/, '')
+			const candidate = path.resolve(path.join(staticRoot, rel))
+			if (!pathIsUnderDir(candidate, staticRoot)) {
+				return new Response('Forbidden', { status: 403 })
+			}
+
+			let filePath = null
+			if (fs.existsSync(candidate)) {
+				const st = fs.statSync(candidate)
+				if (st.isDirectory()) {
+					const indexInDir = path.join(candidate, 'index.html')
+					if (fs.existsSync(indexInDir) && pathIsUnderDir(indexInDir, staticRoot)) filePath = indexInDir
+				} else {
+					filePath = candidate
+				}
+			}
+			if (!filePath) {
+				const ext = path.extname(candidate)
+				if (ext && ext !== '.html') {
+					return new Response('Not found', { status: 404 })
+				}
+				const indexPath = path.join(staticRoot, 'index.html')
+				if (!fs.existsSync(indexPath)) {
+					return new Response('Not found', { status: 404 })
+				}
+				filePath = indexPath
+			}
+
+			const mime = mimeForStaticFile(filePath)
+			const st = fs.statSync(filePath)
+			if (request.method === 'HEAD') {
+				return new Response(null, {
+					status: 200,
+					headers: { 'Content-Type': mime, 'Content-Length': String(st.size) }
+				})
+			}
+			const body = await fs.promises.readFile(filePath)
+			return new Response(body, { status: 200, headers: { 'Content-Type': mime } })
+		} catch (e) {
+			const message = e instanceof Error ? e.message : String(e)
+			return new Response(message, { status: 500 })
+		}
 	})
 }
 
@@ -474,11 +645,6 @@ function registerInvokeHandlers() {
 	invokeHandlersRegistered = true
 }
 
-/** Set `ELECTRON_DEV=1` (see `npm run electron:dev`) or pass `--dev` when running unpackaged. */
-const dev =
-	process.env.ELECTRON_DEV === '1' ||
-	(!app.isPackaged && process.argv.includes('--dev'))
-
 function createWindow() {
 	const iconCandidates = [
 		path.join(__dirname, '..', 'build-resources', 'icon.png'),
@@ -521,13 +687,14 @@ function createWindow() {
 		void win.loadURL(url)
 		win.webContents.openDevTools({ mode: 'detach' })
 	} else {
-		const indexHtml = path.join(__dirname, '..', 'build', 'index.html')
-		void win.loadFile(indexHtml)
+		/** Hash router: route lives in `location.hash`, document path stays `/` (stable on `app://`). */
+		void win.loadURL('app://roost/#/')
 	}
 }
 
 app.whenReady().then(() => {
 	registerRoostMediaProtocol()
+	if (!dev) registerAppStaticProtocol()
 	registerInvokeHandlers()
 	getDb().openDb(app)
 	createWindow()

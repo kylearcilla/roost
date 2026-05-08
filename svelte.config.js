@@ -15,6 +15,10 @@ const config = {
 		adapter: adapter({
 			fallback: 'index.html'
 		}),
+		/** Electron `app://` origin: pathname routing is flaky; hash keeps the document URL path stable (`/`). */
+		router: {
+			type: 'hash'
+		},
 		/** Works with `file://` and custom protocols when packaged in Electron */
 		paths: {
 			relative: true
