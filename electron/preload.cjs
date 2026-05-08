@@ -1,4 +1,6 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const electron = require('electron')
+const { contextBridge, ipcRenderer } = electron
+const webUtils = electron.webUtils
 
 function headersToRecord(headers) {
 	const out = {}
@@ -72,12 +74,68 @@ async function dbInvoke(domain, method, ...args) {
 	return ipcRenderer.invoke('db-api', { domain, method, args })
 }
 
+async function revealUserDataInFileManager() {
+	return ipcRenderer.invoke('roost-reveal-user-data')
+}
+
+async function saveImportedMedia(payload) {
+	return ipcRenderer.invoke('roost-save-imported-media', payload)
+}
+
+async function deleteImportedMedia(payload) {
+	return ipcRenderer.invoke('roost-delete-imported-media', payload)
+}
+
+async function deleteCollectionMediaFolder(payload) {
+	return ipcRenderer.invoke('roost-delete-collection-media-folder', payload)
+}
+
+async function renameCollectionMediaFolder(payload) {
+	return ipcRenderer.invoke('roost-rename-collection-media-folder', payload)
+}
+
+/** Real path for a File from disk (picker / drag); empty for synthetic blobs. */
+function getNativePathForFile(file) {
+	if (!file || typeof webUtils?.getPathForFile !== 'function') return ''
+	try {
+		return String(webUtils.getPathForFile(file) ?? '').trim()
+	} catch {
+		return ''
+	}
+}
+
+/** UTF-8 → base64url (sandboxed preload: no `Buffer` / no `node:buffer` require). */
+function utf8ToBase64Url(s) {
+	const bytes = new TextEncoder().encode(s)
+	let bin = ''
+	for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+	return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+/** `<img>` / `<video>` src: `http` renderer cannot load `file://`; main serves via `roost-media` protocol. */
+function roostMediaUrlFromPath(absPath) {
+	const str = String(absPath ?? '').trim()
+	if (!str) return ''
+	try {
+		return `roost-media://roost/${utf8ToBase64Url(str)}`
+	} catch {
+		return ''
+	}
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
 	fetchMetadata,
 	libraryList,
 	libraryUpsert,
 	libraryDelete,
-	dbInvoke
+	dbInvoke,
+	revealUserDataInFileManager,
+	saveImportedMedia,
+	deleteImportedMedia,
+	deleteCollectionMediaFolder,
+	renameCollectionMediaFolder,
+	getNativePathForFile,
+	roostMediaUrlFromPath
 })
 
 let insetTitleBar = false
@@ -91,7 +149,15 @@ try {
 	}
 }
 
+let userDataPath = ''
+try {
+	userDataPath = String(ipcRenderer.sendSync('roost-sync-user-data-path') ?? '')
+} catch {
+	userDataPath = ''
+}
+
 contextBridge.exposeInMainWorld('roost', {
 	isElectron: true,
-	insetTitleBar
+	insetTitleBar,
+	userDataPath
 })

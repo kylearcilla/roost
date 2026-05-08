@@ -28,6 +28,12 @@ export function indexForGridColumnSize(size: GridColumnSize | string | undefined
 	return j === -1 ? 0 : j
 }
 
+/** Normalize DB / IPC values (handles missing or snake_case keys). */
+export function coerceGridColumnSize(raw: unknown): GridColumnSize {
+	if (raw === 'small' || raw === 'medium' || raw === 'large' || raw === 'xlarge') return raw
+	return 'large'
+}
+
 export function formatCardDate(iso: string) {
     const raw = iso.trim()
     if (!raw) return ''
@@ -270,7 +276,7 @@ export function getVertScrollStatus(target: HTMLElement, options?: { topOffSet?:
     },
   ]
 
-  export function removeItemArr<T extends { idx: number; id: string | number }>({ array, idx }: { 
+export function removeItemArr<T extends { idx: number; id: string | number }>({ array, idx }: { 
     array: T[]
     idx:  number 
   }): { newArray: T[], updated: ReorderItemPayload } {
@@ -290,21 +296,29 @@ export function getVertScrollStatus(target: HTMLElement, options?: { topOffSet?:
     return { newArray, updated }
   }
 
-export function insertItemArr<T extends { idx: number }>({ 
-array, 
-item, 
-atIdx 
-}: { array: T[], item: T, atIdx?: number }): T[] {
-atIdx ??= item.idx
-const newArray = [...array, item]
+export function insertItemArr<T extends { idx: number; id: string | number }>({
+	array,
+	item,
+	atIdx
+}: {
+	array: T[]
+	item: T
+	atIdx?: number
+}): { newArray: T[]; updated: ReorderItemPayload } {
+	const slot = atIdx ?? item.idx
+	const newArray = [...array, item]
+	const updated: ReorderItemPayload = []
 
-for (let i = 0; i < newArray.length; i++) {
-if (newArray[i].idx >= atIdx && newArray[i] !== item) {
-  newArray[i].idx += 1
-}
-}
+	for (let i = 0; i < newArray.length; i++) {
+		const el = newArray[i]
+		if (el === item) continue
+		if (el.idx >= slot) {
+			el.idx += 1
+			updated.push({ idx: el.idx, id: `${el.id}` })
+		}
+	}
 
-return newArray
+	return { newArray, updated }
 }
 
 /**

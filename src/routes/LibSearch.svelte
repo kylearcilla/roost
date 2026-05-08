@@ -46,12 +46,11 @@
 		if (quotedTitle !== null) {
 			isSearching = true
 			try {
-				const row = addLibraryTitleItem({
+				addLibraryTitleItem({
 					title: quotedTitle,
 					collectionId: global.selectedCollectionId,
 					activeTagFilter: global.currFilterTab
 				})
-				global.onAddItem(row.id)
 				linkInput = ''
 			} finally {
 				isSearching = false
@@ -62,12 +61,11 @@
 		isSearching = true
 		try {
 			const data = await fetchContentMetadata(u)
-			const row = addLibraryItemFromMetadata({
+			addLibraryItemFromMetadata({
 				meta: data,
 				collectionId: global.selectedCollectionId,
 				activeTagFilter: global.currFilterTab
 			})
-			global.onAddItem(row.id)
 			linkInput = ''
 		} catch (err) {
 			console.error('[LibSearch] metadata fetch error', err)

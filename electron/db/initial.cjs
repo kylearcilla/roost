@@ -2,7 +2,7 @@
  * Electron main-process DB: opens SQLite under `userData`, runs Drizzle migrations,
  * and exposes IPC-friendly helpers for the content library (`library_item`).
  *
- * Schema tables are defined in `*.schema.ts` and aggregated via `./schema.ts`;
+ * Schema tables live under `shared/db/` and are re-exported from `./schema.ts`;
  * this file loads that barrel with {@link https://github.com/unjs/jiti | jiti} (CJS → TS).
  *
  * @module electron/db/initial

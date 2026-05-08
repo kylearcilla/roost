@@ -1,5 +1,6 @@
 import { asc, eq } from 'drizzle-orm'
 import { db } from '../context'
+import type { ReorderItemPayload } from '../utils'
 import { tag, tagOrder } from './tags.schema'
 import type { TagInsert, TagOrderInsert, TagRow } from './tags.schema'
 
@@ -9,6 +10,14 @@ export function listTagsByCollection(collectionId: string): TagRow[] {
 		.from(tag)
 		.where(eq(tag.collectionId, collectionId))
 		.orderBy(asc(tag.idx), asc(tag.id))
+		.all()
+}
+
+export function listTagsAll(): TagRow[] {
+	return db()
+		.select()
+		.from(tag)
+		.orderBy(asc(tag.collectionId), asc(tag.idx), asc(tag.id))
 		.all()
 }
 
@@ -26,6 +35,28 @@ export function updateTag(id: string, patch: Partial<TagInsert>): TagRow | undef
 
 export function deleteTag(id: string): { changes: number } {
 	return db().delete(tag).where(eq(tag.id, id)).run()
+}
+
+/** Apply `idx` patches for tags in `collectionId`, then rebuild `tag_order`. */
+export function updateIndices(collectionId: string, changes: ReorderItemPayload): { changes: number } {
+	return db().transaction((tx) => {
+		let total = 0
+		for (const change of changes) {
+			const r = tx.update(tag).set({ idx: change.idx }).where(eq(tag.id, change.id)).run()
+			total += r.changes
+		}
+		const rows = tx
+			.select()
+			.from(tag)
+			.where(eq(tag.collectionId, collectionId))
+			.orderBy(asc(tag.idx), asc(tag.id))
+			.all()
+		tx.delete(tagOrder).where(eq(tagOrder.collectionId, collectionId)).run()
+		for (let i = 0; i < rows.length; i++) {
+			tx.insert(tagOrder).values({ collectionId, tagId: rows[i].id, sortIndex: i }).run()
+		}
+		return { changes: total }
+	})
 }
 
 export function listTagOrderByCollection(collectionId: string) {

@@ -8,6 +8,7 @@ import type {
 	FavoriteInsert,
 	FavoriteRow
 } from './collections.schema'
+import type { ReorderItemPayload } from '../utils'
 
 export function listCollections(): CollectionRow[] {
 	return db().select().from(collection).orderBy(asc(collection.idx), asc(collection.id)).all()
@@ -49,29 +50,46 @@ export function deleteFavorite(id: string): { changes: number } {
 	return db().delete(favorite).where(eq(favorite.id, id)).run()
 }
 
-export function listCollectionOrder(bucketKey: string) {
+/** Apply `idx` patches, then rebuild `collection_order` from current rows. */
+export function updateIndices(changes: ReorderItemPayload): { changes: number } {
+	return db().transaction((tx) => {
+		let total = 0
+		for (const change of changes) {
+			const r = tx.update(collection).set({ idx: change.idx }).where(eq(collection.id, change.id)).run()
+			total += r.changes
+		}
+		const rows = tx
+			.select()
+			.from(collection)
+			.orderBy(asc(collection.idx), asc(collection.id))
+			.all()
+		tx.delete(collectionOrder).run()
+		for (let i = 0; i < rows.length; i++) {
+			tx.insert(collectionOrder)
+				.values({ collectionId: rows[i].id, sortIndex: i })
+				.run()
+		}
+		return { changes: total }
+	})
+}
+
+export function listCollectionOrder() {
 	return db()
 		.select()
 		.from(collectionOrder)
-		.where(eq(collectionOrder.bucketKey, bucketKey))
 		.orderBy(asc(collectionOrder.sortIndex), asc(collectionOrder.collectionId))
 		.all()
 }
 
-export function replaceCollectionOrder(
-	bucketKey: string,
-	rows: Pick<CollectionOrderInsert, 'collectionId' | 'sortIndex'>[]
-) {
+export function replaceCollectionOrder(rows: Pick<CollectionOrderInsert, 'collectionId' | 'sortIndex'>[]) {
 	db().transaction((tx) => {
-		tx.delete(collectionOrder).where(eq(collectionOrder.bucketKey, bucketKey)).run()
+		tx.delete(collectionOrder).run()
 		for (const r of rows) {
-			tx.insert(collectionOrder)
-				.values({ bucketKey, collectionId: r.collectionId, sortIndex: r.sortIndex })
-				.run()
+			tx.insert(collectionOrder).values({ collectionId: r.collectionId, sortIndex: r.sortIndex }).run()
 		}
 	})
 }
 
-export function deleteCollectionOrderForBucket(bucketKey: string): { changes: number } {
-	return db().delete(collectionOrder).where(eq(collectionOrder.bucketKey, bucketKey)).run()
+export function clearCollectionOrder(): { changes: number } {
+	return db().delete(collectionOrder).run()
 }

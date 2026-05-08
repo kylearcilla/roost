@@ -40,3 +40,12 @@ export function deleteLibraryTag(id: string) {
 	const { [id]: _removed, ...rest } = libraryTags.byId
 	libraryTags.byId = rest
 }
+
+/** Drop every tag row for `collectionId` from in-memory map (use when a collection is removed). */
+export function pruneLibraryTagsForCollection(collectionId: string) {
+	const cid = collectionId.trim()
+	if (!cid) return
+	libraryTags.byId = Object.fromEntries(
+		Object.entries(libraryTags.byId).filter(([, t]) => t.collectionId !== cid)
+	)
+}

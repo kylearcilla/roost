@@ -8,12 +8,25 @@
 	import { extractUrl } from '$lib/lib/collection-sources'
 	import { DEFAULT_IMG_UPLOAD_CONSTRAINTS, validateImgURL } from '$lib/lib/fetch-content'
 	import { global } from '$lib/lib/global.svelte'
+	import {
+		mediaDisplaySrc,
+		persistVolatileImageHref,
+		saveImportedUserFile,
+		type ImportedMediaStoreScope
+	} from '$lib/lib/importedMedia'
 	import { patchLibraryItem } from '$lib/libraryContent.svelte'
 	import { libraryTags, patchLibraryTag } from '$lib/libraryTags.svelte'
 	import { openTagAssignPicker } from '$lib/mocks/tags'
 	import { tick } from 'svelte'
 	
 	let { item }: { item: ContentItem } = $props()
+
+	const cardMediaStore = $derived.by((): ImportedMediaStoreScope => {
+		const cid = item.collectionIds[0]?.trim() ?? ''
+		if (!cid) return { scope: 'user' }
+		const col = global.collections.find((c) => c.id === cid)
+		return { scope: 'collection', collectionId: cid, collectionName: col?.name }
+	})
 
 	const ctxMenuId = $derived(`ctx-card-${item.id}`)
 	const videoThumbResumeTimeByKey = new Map<string, number>()
@@ -29,7 +42,7 @@
 	const tagEditFloatDmenuId = $derived(`content-card-tag-float-${item.id}`)
 
 	const DIM_ORDER: ImageDimsType[] = ['auto', 'default', '3x2', 'portrait', 'square', 'video']
-	const VIDEO_HOVER_PLAY_MS = 400
+	const VIDEO_HOVER_PLAY_MS = 200
 	const videoHoverPlayTimers = new WeakMap<HTMLVideoElement, number>()
 	const videoHoverPlayCommitted = new WeakMap<HTMLVideoElement, boolean>()
 
@@ -133,15 +146,15 @@
 		Boolean(hasMediaSrc && (!item.media?.dims || item.media.dims === 'auto'))
 	)
 	const mediaImageUrl = $derived(
-		item.media?.type === 'image' ? (item.media.url ?? '').trim() : ''
+		item.media?.type === 'image' ? mediaDisplaySrc(item.media) : ''
 	)
 	const mediaVideoUrl = $derived(
-		item.media?.type === 'video' ? (item.media.url ?? '').trim() : ''
+		item.media?.type === 'video' ? mediaDisplaySrc(item.media) : ''
 	)
 	const mediaModalSrc = $derived.by(() => {
 		const m = item.media
 		if (!m || (!(m.url ?? '').trim() && !(m.path ?? '').trim())) return ''
-		return (m.url ?? '').trim() || (m.path ?? '').trim()
+		return mediaDisplaySrc(m)
 	})
 
 	const mediaModalIsVideo = $derived(item.media?.type === 'video')
@@ -197,12 +210,40 @@
 	function openImgFilePicker() {
 		imgFileInputEl?.click()
 	}
-	function onImgFilePicked(e: Event) {
+	async function onImgFilePicked(e: Event) {
 		const el = e.currentTarget as HTMLInputElement
 		const file = el.files?.[0]
 		el.value = ''
 		if (!file || !file.type.startsWith('image/')) return
-		applyImageHref(URL.createObjectURL(file))
+		const saved = await saveImportedUserFile(file, cardMediaStore)
+		if (saved.ok) {
+			if (imgFloatMode === 'add') {
+				patchLibraryItem(item.id, {
+					media: {
+						id: crypto.randomUUID(),
+						type: 'image',
+						url: undefined,
+						path: saved.absolutePath,
+						dims: 'auto'
+					}
+				})
+			} else {
+				const m = item.media
+				const typ = m?.type === 'video' ? 'video' : 'image'
+				const dims = m?.dims ?? 'auto'
+				patchLibraryItem(item.id, {
+					media: {
+						id: mediaIdForPatch(m),
+						type: typ,
+						url: undefined,
+						path: saved.absolutePath,
+						dims
+					}
+				})
+			}
+		} else {
+			await applyImageHref(URL.createObjectURL(file))
+		}
 		closeImgFloat()
 	}
 	function triggerImgSubmitJitter() {
@@ -223,17 +264,40 @@
 		return m?.id ?? crypto.randomUUID()
 	}
 
-	function applyImageHref(href: string) {
+	async function applyImageHref(href: string) {
+		let url: string | undefined = href
+		let mediaPath: string | undefined
+		if (href.startsWith('blob:') || href.startsWith('data:')) {
+			const r = await persistVolatileImageHref(href, cardMediaStore)
+			if ('path' in r) {
+				url = undefined
+				mediaPath = r.path
+			} else {
+				url = r.url
+			}
+		}
 		if (imgFloatMode === 'add') {
 			patchLibraryItem(item.id, {
-				media: { id: crypto.randomUUID(), type: 'image', url: href, dims: 'auto' }
+				media: {
+					id: crypto.randomUUID(),
+					type: 'image',
+					url,
+					path: mediaPath,
+					dims: 'auto'
+				}
 			})
 		} else {
 			const m = item.media
 			const typ = m?.type === 'video' ? 'video' : 'image'
 			const dims = m?.dims ?? 'auto'
 			patchLibraryItem(item.id, {
-				media: { id: mediaIdForPatch(m), type: typ, url: href, path: undefined, dims }
+				media: {
+					id: mediaIdForPatch(m),
+					type: typ,
+					url,
+					path: mediaPath,
+					dims
+				}
 			})
 		}
 	}
@@ -261,14 +325,14 @@
 		}
 		const href = again.href
 		if (href.startsWith('blob:') || href.startsWith('data:')) {
-			applyImageHref(href)
+			await applyImageHref(href)
 			closeImgFloat()
 			return
 		}
 		imgSubmitValidating = true
 		try {
 			await validateImgURL({ url: href, constraints: DEFAULT_IMG_UPLOAD_CONSTRAINTS })
-			applyImageHref(href)
+			await applyImageHref(href)
 			closeImgFloat()
 		} catch (e) {
 			if (e instanceof DOMException && e.name === 'AbortError') return
@@ -429,7 +493,7 @@
 	/* video */
 
 	function videoThumbResumeKey(): string {
-		const u = (item.media?.url ?? '').trim()
+		const u = mediaDisplaySrc(item.media ?? {}).trim()
 		return `${item.id}\0${u}`
 	}
 	function clearVideoHoverPlayTimer(v: HTMLVideoElement) {
@@ -535,17 +599,17 @@
 		if (!hasLink) {
 			items.push({ type: 'btn', label: 'Add Source' })
 		}
-		if (hasTitle) {
-			items.push({ type: 'btn', label: 'Remove Title' })
-		}
-		else {
-			items.push({ type: 'btn', label: 'Add Title' })
-		}
 		if (hasDescription) {
 			items.push({ type: 'btn', label: 'Remove Description' })
 		} 
 		else {
 			items.push({ type: 'btn', label: 'Add Description' })
+		}
+		if (hasTitle) {
+			items.push({ type: 'btn', label: 'Remove Title' })
+		}
+		else {
+			items.push({ type: 'btn', label: 'Add Title' })
 		}
 		if (hasImage) {
 			items.push({

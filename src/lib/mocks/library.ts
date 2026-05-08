@@ -64,6 +64,7 @@ export const mockContentItems: ContentItem[] = [
 		title: 'What Good Design Still Means',
 		snippet: 'In a world of templates and AI drafts, intention still wins.',
 		media: {
+			id: 'mock-media-c1',
 			type: 'image',
 			url: 'https://picsum.photos/seed/roost1/640/400',
 			dims: 'default'
@@ -81,6 +82,7 @@ export const mockContentItems: ContentItem[] = [
 		title: 'Local Project — Architecture Walkthrough',
 		snippet: 'A calm tour through structure, light, and material.',
 		media: {
+			id: 'mock-media-c2',
 			type: 'image',
 			url: 'https://picsum.photos/seed/roost2/640/360',
 			dims: 'video'
@@ -123,6 +125,7 @@ export const mockContentItems: ContentItem[] = [
 		title: 'Art as Therapy',
 		snippet: 'Alain de Botton & John Armstrong',
 		media: {
+			id: 'mock-media-c5',
 			type: 'image',
 			url: 'https://picsum.photos/seed/roostbook/320/480',
 			dims: 'portrait'
@@ -141,6 +144,7 @@ export const mockContentItems: ContentItem[] = [
 		title: 'Why we still reach for boring stacks',
 		snippet: 'Boring technology club membership keeps growing.',
 		media: {
+			id: 'mock-media-c6',
 			type: 'image',
 			url: 'https://picsum.photos/seed/roost3/640/520',
 			dims: 'default'
@@ -170,6 +174,7 @@ export const mockContentItems: ContentItem[] = [
 		title: 'Refactors that pay rent',
 		snippet: 'When incremental beats the big rewrite.',
 		media: {
+			id: 'mock-media-c8',
 			type: 'image',
 			url: 'https://picsum.photos/seed/roost4/640/380',
 			dims: 'video'

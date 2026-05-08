@@ -3,8 +3,16 @@
 	import FloatInput from '$lib/components/FloatInput.svelte'
 	import { ELECTRON_CHROME_INSET_CTX } from '$lib/electronChromeInsetContext'
 	import { extractUrl } from '$lib/lib/collection-sources'
+	import {
+		mediaDisplaySrc,
+		persistVolatileImageHref,
+		saveImportedUserFile,
+		storedImageSrc,
+		type ImportedMediaStoreScope
+	} from '$lib/lib/importedMedia'
 	import { DEFAULT_IMG_UPLOAD_CONSTRAINTS, validateImgURL } from '$lib/lib/fetch-content'
 	import { global } from '$lib/lib/global.svelte'
+	import { v4 as uuidv4 } from 'uuid'
 	import { getContext } from 'svelte'
 	import { libraryContent } from '$lib/libraryContent.svelte'
 
@@ -18,22 +26,31 @@
 
 	const HEADER_IMG_FLOAT_ID = 'header-collection-wallpaper-float'
 
-	const selectedCollection = $derived(global.currCollection ?? global.collections[0])
-	const currentCid = $derived(global.selectedCollectionId)
+	const selectedCollection = $derived(global.currCollection ?? global.collections[0] ?? undefined)
+
+	function wallpaperImportStore(): ImportedMediaStoreScope | null {
+		const c = selectedCollection
+		if (!c) return null
+		return { scope: 'collection', collectionId: c.id, collectionName: c.name }
+	}
 
 	const hasWallpaper = $derived.by(() => {
-		const w = selectedCollection.wallpaper
+		const c = selectedCollection
+		if (!c) return false
+		const w = c.wallpaper
 		if (!w) return false
 		return Boolean(w?.url?.trim() || w?.path?.trim())
 	})
 
 	const bannerSrc = $derived.by(() => {
-		const w = selectedCollection.wallpaper
+		const c = selectedCollection
+		if (!c) return ''
+		const w = c.wallpaper
 		if (!w || w.type !== 'image') return ''
-		return (w.url ?? w.path ?? '').trim()
+		return mediaDisplaySrc(w)
 	})
 
-	const wallpaperFocusY = $derived(selectedCollection.wallpaperFocusY ?? 50)
+	const wallpaperFocusY = $derived(selectedCollection?.wallpaperFocusY ?? 50)
 	let onHomePage = $derived(global.onHomePage)
 
 	const allItemsCount = $derived(libraryContent.items.length)
@@ -65,14 +82,18 @@
 	})
 
 	$effect(() => {
-		const t = selectedCollection.headline ?? selectedCollection.name
+		const c = selectedCollection
+		if (!c) return
+		const t = c.headline ?? c.name
 		if (!titleEl) return
 		if (document.activeElement === titleEl) return
 		if (titleEl.textContent !== t) titleEl.textContent = t
 	})
 
 	$effect(() => {
-		const sub = selectedCollection.subtitle ?? currentCid
+		const c = selectedCollection
+		if (!c) return
+		const sub = c.subtitle ?? ''
 		if (!subtitleEl) return
 		if (document.activeElement === subtitleEl) return
 		subtitleEl.textContent = sub
@@ -85,20 +106,24 @@
 	})
 
 	async function commitCollectionTitle(raw: string) {
+		const c = selectedCollection
+		if (!c) return
 		const next = raw.replace(/\s+/g, ' ').trim()
-		const defaultName = selectedCollection.name.trim()
+		const defaultName = c.name.trim()
 		const newHeadline =
 			!next || next === defaultName ? undefined : next
-		const prev = (selectedCollection.headline ?? '').trim()
+		const prev = (c.headline ?? '').trim()
 		if ((newHeadline ?? '') === prev) return
-		await global.updateCollection({ ...selectedCollection, headline: newHeadline })
+		await global.updateCollection({ ...c, headline: newHeadline })
 	}
 
 	async function commitCollectionSubtitle(raw: string) {
+		const c = selectedCollection
+		if (!c) return
 		const next = raw.replace(/\s+/g, ' ').trim()
-		const cur = (selectedCollection.subtitle ?? '').trim()
+		const cur = (c.subtitle ?? '').trim()
 		if (next === cur) return
-		await global.updateCollection({ ...selectedCollection, subtitle: next || undefined })
+		await global.updateCollection({ ...c, subtitle: next || undefined })
 	}
 
 	function closeWallpaperFloat() {
@@ -118,24 +143,42 @@
 		window.setTimeout(() => (imgSubmitJitter = false), 320)
 	}
 
-	async function applyWallpaperHref(href: string) {
+	async function applyWallpaperMedia(patch: { url?: string; path?: string }) {
+		const c = selectedCollection
+		if (!c) return
 		await global.updateCollection({
-			...selectedCollection,
-			wallpaper: { type: 'image', url: href, dims: 'auto' },
+			...c,
+			wallpaper: { id: uuidv4(), type: 'image', url: patch.url, path: patch.path, dims: 'auto' },
 			wallpaperFocusY: undefined
 		})
 	}
 
+	async function applyWallpaperHref(href: string) {
+		if (href.startsWith('blob:') || href.startsWith('data:')) {
+			const st = wallpaperImportStore()
+			if (!st) return
+			const r = await persistVolatileImageHref(href, st)
+			if ('path' in r) await applyWallpaperMedia({ path: r.path })
+			else await applyWallpaperMedia({ url: r.url })
+			return
+		}
+		await applyWallpaperMedia({ url: href })
+	}
+
 	async function commitWallpaperFocusY(y: number) {
+		const c = selectedCollection
+		if (!c) return
 		await global.updateCollection({
-			...selectedCollection,
+			...c,
 			wallpaperFocusY: y
 		})
 	}
 
 	async function removeBannerWallpaper() {
+		const c = selectedCollection
+		if (!c) return
 		await global.updateCollection({
-			...selectedCollection,
+			...c,
 			wallpaper: null,
 			wallpaperFocusY: undefined
 		})
@@ -150,7 +193,11 @@
 		const file = el.files?.[0]
 		el.value = ''
 		if (!file || !file.type.startsWith('image/')) return
-		await applyWallpaperHref(URL.createObjectURL(file))
+		const st = wallpaperImportStore()
+		if (!st) return
+		const saved = await saveImportedUserFile(file, st)
+		if (saved.ok) await applyWallpaperMedia({ path: saved.absolutePath })
+		else await applyWallpaperHref(URL.createObjectURL(file))
 		closeWallpaperFloat()
 	}
 
@@ -208,12 +255,12 @@
 {#snippet userInfo()}
 	<div class="lib-header__user">
 		<button type="button" class="lib-header__user-name" onclick={() => {}}>
-			{global.user.displayName}
+			{global.user?.displayName?.trim() || 'You'}
 		</button>
-		{#if global.user.avatarUrl}
+		{#if global.user?.avatarUrl}
 			<img
 				class="lib-header__avatar"
-				src={global.user.avatarUrl}
+				src={storedImageSrc(global.user.avatarUrl)}
 				alt=""
 				width="36"
 				height="36"
@@ -230,7 +277,6 @@
 			<span class="lib-header--home__name">All</span>
 			<span class="lib-header--home__count">({homeCountLabel})</span>
 		</div>
-		{@render userInfo()}
 	</header>
 {:else}
 	<div class="lib-header-stack">
@@ -425,7 +471,7 @@
 
 			&:empty::before {
 				content: attr(data-placeholder);
-				color: rgba(0, 0, 0, 0.28);
+				color: rgba(0, 0, 0, 0.1);
 				pointer-events: none;
 			}
 		}

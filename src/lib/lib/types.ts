@@ -21,6 +21,7 @@ type Media = {
 	id: string
 	type: 'image' | 'video'
 	url?: string
+	/** Absolute path of a **copy** under app data (`…/media/<slug>--<id>/…`; main may still allow older roots). Remote assets use `url`. */
 	path?: string
 	dims: ImageDimsType
 }

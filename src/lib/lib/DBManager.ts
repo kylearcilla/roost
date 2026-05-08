@@ -1,11 +1,20 @@
 import {
 	collectionPatchToDb,
 	collectionToDbRow,
+	favoritePatchToDb,
+	favoriteToDbInsert,
 	tagPatchToDb,
-	tagToDbInsert
+	tagToDbInsert,
+	userPatchToDb,
+	userToDbInsert
 } from '$lib/lib/types.db'
+import type { LibraryItemInsert } from '$shared/db/items.schema'
+import type { MediaInsert } from '$shared/db/utils.schema'
 
 type RoostDbDomain = 'collections' | 'items' | 'settings' | 'tags' | 'utils'
+
+/** Same shape as app `ReorderItemPayload` / main `updateIndices` args. */
+type ReorderIdxPayload = { id: string; idx: number }[]
 
 function getElectronApi() {
 	if (typeof window === 'undefined') return undefined
@@ -50,6 +59,9 @@ export class DBManager {
 		},
 		delete: (id: string) => {
 			return this.call('collections', 'deleteCollection', id)
+		},
+		updateIndices: (changes: ReorderIdxPayload) => {
+			return this.call('collections', 'updateIndices', changes)
 		}
 	}
 
@@ -60,26 +72,14 @@ export class DBManager {
 		get: (id: string) => {
 			return this.call('collections', 'getFavoriteById', id)
 		},
-		insert: (row: unknown) => {
-			return this.call('collections', 'insertFavorite', row)
+		insert: (favorite: FavoriteFolder) => {
+			return this.call('collections', 'insertFavorite', favoriteToDbInsert(favorite))
 		},
-		update: (id: string, patch: unknown) => {
-			return this.call('collections', 'updateFavorite', id, patch)
+		update: (id: string, patch: Partial<FavoriteFolder>) => {
+			return this.call('collections', 'updateFavorite', id, favoritePatchToDb(patch))
 		},
 		delete: (id: string) => {
 			return this.call('collections', 'deleteFavorite', id)
-		}
-	}
-
-	readonly collectionOrder = {
-		list: (bucketKey: string) => {
-			return this.call('collections', 'listCollectionOrder', bucketKey)
-		},
-		replace: (bucketKey: string, rows: unknown) => {
-			return this.call('collections', 'replaceCollectionOrder', bucketKey, rows)
-		},
-		clear: (bucketKey: string) => {
-			return this.call('collections', 'deleteCollectionOrderForBucket', bucketKey)
 		}
 	}
 
@@ -93,10 +93,10 @@ export class DBManager {
 		getBySourceUrl: (sourceUrl: string) => {
 			return this.call('items', 'getLibraryItemBySourceUrl', sourceUrl)
 		},
-		insert: (row: unknown) => {
+		insert: (row: LibraryItemInsert) => {
 			return this.call('items', 'insertLibraryItem', row)
 		},
-		update: (id: string, patch: unknown) => {
+		update: (id: string, patch: Partial<LibraryItemInsert>) => {
 			return this.call('items', 'updateLibraryItem', id, patch)
 		},
 		delete: (id: string) => {
@@ -105,17 +105,14 @@ export class DBManager {
 		deleteBySourceUrl: (sourceUrl: string) => {
 			return this.call('items', 'deleteLibraryItemBySourceUrl', sourceUrl)
 		},
+		deleteOrderScopesForCollection: (collectionId: string, tagIds: string[]) => {
+			return this.call('items', 'deleteOrderScopesForCollection', collectionId, tagIds)
+		},
 		upsertFromMetadata: (metadata: unknown) => {
 			return this.call('items', 'upsertLibraryItemFromMetadata', metadata)
 		},
-		listOrder: (scopeKey: string) => {
-			return this.call('items', 'listLibraryItemOrderByScope', scopeKey)
-		},
-		replaceOrder: (scopeKey: string, rows: unknown) => {
-			return this.call('items', 'replaceLibraryItemOrderForScope', scopeKey, rows)
-		},
-		clearOrder: (scopeKey: string) => {
-			return this.call('items', 'deleteLibraryItemOrderForScope', scopeKey)
+		updateIndices: (scopeKey: string, changes: ReorderIdxPayload) => {
+			return this.call('items', 'updateIndices', scopeKey, changes)
 		}
 	}
 
@@ -126,14 +123,14 @@ export class DBManager {
 		get: (id: string) => {
 			return this.call('settings', 'getUserById', id)
 		},
-		insert: (row: unknown) => {
-			return this.call('settings', 'insertUser', row)
+		insert: (user: User) => {
+			return this.call('settings', 'insertUser', userToDbInsert(user))
 		},
-		update: (id: string, patch: unknown) => {
-			return this.call('settings', 'updateUser', id, patch)
+		update: (id: string, patch: Partial<User>) => {
+			return this.call('settings', 'updateUser', id, userPatchToDb(patch))
 		},
-		upsert: (row: unknown) => {
-			return this.call('settings', 'upsertUser', row)
+		upsert: (user: User) => {
+			return this.call('settings', 'upsertUser', userToDbInsert(user))
 		},
 		delete: (id: string) => {
 			return this.call('settings', 'deleteUser', id)
@@ -141,6 +138,9 @@ export class DBManager {
 	}
 
 	readonly tags = {
+		listAll: () => {
+			return this.call('tags', 'listTagsAll')
+		},
 		list: (collectionId: string) => {
 			return this.call('tags', 'listTagsByCollection', collectionId)
 		},
@@ -156,14 +156,8 @@ export class DBManager {
 		delete: (id: string) => {
 			return this.call('tags', 'deleteTag', id)
 		},
-		listOrder: (collectionId: string) => {
-			return this.call('tags', 'listTagOrderByCollection', collectionId)
-		},
-		replaceOrder: (collectionId: string, rows: unknown) => {
-			return this.call('tags', 'replaceTagOrder', collectionId, rows)
-		},
-		clearOrder: (collectionId: string) => {
-			return this.call('tags', 'deleteTagOrderForCollection', collectionId)
+		updateIndices: (collectionId: string, changes: ReorderIdxPayload) => {
+			return this.call('tags', 'updateIndices', collectionId, changes)
 		}
 	}
 
@@ -174,10 +168,10 @@ export class DBManager {
 		get: (id: string) => {
 			return this.call('utils', 'getMediaById', id)
 		},
-		insert: (row: unknown) => {
+		insert: (row: MediaInsert) => {
 			return this.call('utils', 'insertMedia', row)
 		},
-		update: (id: string, patch: unknown) => {
+		update: (id: string, patch: Partial<MediaInsert>) => {
 			return this.call('utils', 'updateMedia', id, patch)
 		},
 		delete: (id: string) => {

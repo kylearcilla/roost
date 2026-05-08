@@ -2,7 +2,6 @@
 	import { abs, cursorPos } from '$lib'
 	import FloatInput from '$lib/components/FloatInput.svelte'
 	import { global } from '$lib/lib/global.svelte'
-	import { reorderItemArr as reorderArrayStably } from '$lib/reorderItemArr'
 	import { getName } from '$lib/getName'
 	import { tick } from 'svelte'
 
@@ -65,8 +64,7 @@
 			const srcIx = arr.findIndex((f) => f.id === favSrcId)
 			const targetIx = arr.findIndex((f) => f.id === favTgtId)
 			if (srcIx !== -1 && targetIx !== -1) {
-				const { newArray } = reorderArrayStably({ array: arr, srcIdx: srcIx, targetIdx: targetIx })
-				await global.applyFavoritesOrder(newArray)
+				await global.reorderFavs(srcIx, targetIx)
 			}
 		}
 		favoritesRef?.removeEventListener('dragover', onFavoriteDrag)
@@ -143,7 +141,7 @@
 				...parsed,
 				idx: global.collections.length,
 				itemCount: 0,
-				columnSize: 'small'
+				columnSize: 'large'
 			})
 			global.setCollection(id)
 		}
@@ -163,7 +161,7 @@
 	}
 
 	async function handleFavoriteContextChoice(fav: FavoriteFolder, label: string, itemId?: string) {
-		if (itemId === 'remove' || label === 'Remove') await global.removeFavoriteAndReindex(fav.id)
+		if (itemId === 'remove' || label === 'Remove') await global.removeFav(fav.id)
 	}
 
 	function openFavoriteContextMenu(e: MouseEvent, fav: FavoriteFolder) {
@@ -218,8 +216,7 @@
 			const srcIx = arr.findIndex((c) => c.id === srcId)
 			const targetIx = arr.findIndex((c) => c.id === targetId)
 			if (srcIx !== -1 && targetIx !== -1) {
-				const { newArray } = reorderArrayStably({ array: arr, srcIdx: srcIx, targetIdx: targetIx })
-				await global.applyCollectionsOrder(newArray)
+				await global.reorderCollections(srcIx, targetIx)
 			}
 		}
 		if (collectionsRef) {
@@ -264,29 +261,38 @@
 					<path fill="currentColor" d="M316.9 18C311.6 7 300.4 0 288.1 0s-23.4 7-28.8 18L195 150.3 51.4 171.5c-12 1.8-22 10.2-25.7 21.7s-.7 24.2 7.9 32.7L137.8 329 113.2 474.7c-2 12 3 24.2 12.9 31.3s23 8 33.8 2.3l128.3-68.5 128.3 68.5c10.8 5.7 23.9 4.9 33.8-2.3s14.9-19.3 12.9-31.3L438.5 329 542.7 225.9c8.6-8.5 11.7-21.2 7.9-32.7s-13.7-19.9-25.7-21.7L381.2 150.3 316.9 18z"/></svg>
 			</span>
 		</div>
-		<div class="sidebar__section-body" bind:this={favoritesRef} role="list">
-			{#each favorites as fav (fav.id)}
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div
-					class="sidebar__favorite-container drop-top-border"
-					role="listitem"
-					data-id={fav.id}
-					data-idx={fav.idx}
-					draggable="true"
-					ondragstart={onFavoriteDragStart}
-					ondragend={onFavoriteDragEnd}
-					class:drop-top-border--over={favTgtId === fav.id && favSrcId !== fav.id}
-					oncontextmenu={(e) => openFavoriteContextMenu(e, fav)}
-				>
-					<button type="button" class="row" onclick={() => selectFavorite(fav)}>
-						<span class="row__main">
-							<span class="row__glyph">{fav.emoji}</span>
-							<span class="row__label">{fav.name}</span>
-						</span>
-						<span class="row__count">{fav.count}</span>
-					</button>
-				</div>
-			{/each}
+		<div
+			class="sidebar__section-body"
+			bind:this={favoritesRef}
+			role={favorites.length === 0 ? 'status' : 'list'}
+			aria-label={favorites.length === 0 ? 'Favorites' : undefined}
+		>
+			{#if favorites.length === 0}
+				<p class="sidebar__section-empty">Empty</p>
+			{:else}
+				{#each favorites as fav (fav.id)}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						class="sidebar__favorite-container drop-top-border"
+						role="listitem"
+						data-id={fav.id}
+						data-idx={fav.idx}
+						draggable="true"
+						ondragstart={onFavoriteDragStart}
+						ondragend={onFavoriteDragEnd}
+						class:drop-top-border--over={favTgtId === fav.id && favSrcId !== fav.id}
+						oncontextmenu={(e) => openFavoriteContextMenu(e, fav)}
+					>
+						<button type="button" class="row" onclick={() => selectFavorite(fav)}>
+							<span class="row__main">
+								<span class="row__glyph">{fav.emoji}</span>
+								<span class="row__label">{fav.name}</span>
+							</span>
+							<span class="row__count">{fav.count}</span>
+						</button>
+					</div>
+				{/each}
+			{/if}
 		</div>
 	</div>
 
@@ -302,38 +308,47 @@
 				<span class="sidebar__section-add-glyph" aria-hidden="true">+</span>
 			</button>
 		</div>
-		<div class="sidebar__section-body" bind:this={collectionsRef} role="list">
-			{#each collections as col (col.id)}
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div
-					class="sidebar__collection-container drop-top-border"
-					role="listitem"
-					data-id={col.id}
-					data-idx={col.idx}
-					draggable="true"
-					ondragstart={onCollectionDragStart}
-					ondragend={onCollectionDragEnd}
-					class:drop-top-border--over={targetId === col.id}
-					oncontextmenu={(e) => openCollectionContextMenu(e, col)}
-				>
-					<button
-						type="button"
-						class="row row--collection"
-						class:row--selected={!global.onHomePage && global.selectedCollectionId === col.id}
-						onclick={() => global.setCollection(col.id)}
+		<div
+			class="sidebar__section-body"
+			bind:this={collectionsRef}
+			role={collections.length === 0 ? 'status' : 'list'}
+			aria-label={collections.length === 0 ? 'Collections' : undefined}
+		>
+			{#if collections.length === 0}
+				<p class="sidebar__section-empty">Empty</p>
+			{:else}
+				{#each collections as col (col.id)}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						class="sidebar__collection-container drop-top-border"
+						role="listitem"
+						data-id={col.id}
+						data-idx={col.idx}
+						draggable="true"
+						ondragstart={onCollectionDragStart}
+						ondragend={onCollectionDragEnd}
+						class:drop-top-border--over={targetId === col.id}
+						oncontextmenu={(e) => openCollectionContextMenu(e, col)}
 					>
-						<span class="row__main">
-							{#if col.emoji}
-								<span class="row__glyph">{col.emoji}</span>
+						<button
+							type="button"
+							class="row row--collection"
+							class:row--selected={!global.onHomePage && global.selectedCollectionId === col.id}
+							onclick={() => global.setCollection(col.id)}
+						>
+							<span class="row__main">
+								{#if col.emoji}
+									<span class="row__glyph">{col.emoji}</span>
+								{/if}
+								<span class="row__label">{col.name}</span>
+							</span>
+							{#if col.itemCount != null}
+								<span class="row__count">{col.itemCount}</span>
 							{/if}
-							<span class="row__label">{col.name}</span>
-						</span>
-						{#if col.itemCount != null}
-							<span class="row__count">{col.itemCount}</span>
-						{/if}
-					</button>
-				</div>
-			{/each}
+						</button>
+					</div>
+				{/each}
+			{/if}
 		</div>
 	</div>
 
@@ -442,6 +457,23 @@
 			display: flex;
 			flex-direction: column;
 			gap: 2px;
+		}
+
+		&__section-empty {
+			margin: 0;
+			padding: 2px 0 0 2px;
+			font-family:
+				ui-monospace,
+				'SF Mono',
+				SFMono-Regular,
+				Menlo,
+				Monaco,
+				Consolas,
+				'Liberation Mono',
+				'Courier New',
+				monospace;
+			font-variant-numeric: tabular-nums;
+			@include text-style(0.15, 400, 1.22rem);
 		}
 		&__favorite-container,
 		&__collection-container {

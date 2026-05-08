@@ -16,7 +16,7 @@ function dbCredentialsUrl(): string {
 }
 
 export default defineConfig({
-	schema: './electron/db/schema.ts',
+	schema: './shared/db/schema.ts',
 	out: './electron/db/migrations',
 	dialect: 'sqlite',
 	strict: true,

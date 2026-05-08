@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { asc, desc, eq } from 'drizzle-orm'
+import { and, asc, desc, eq } from 'drizzle-orm'
 import { db } from '../context'
+import type { ReorderItemPayload } from '../utils'
 import { libraryItem, libraryItemOrder } from './items.schema'
 import type { LibraryItemInsert, LibraryItemOrderInsert, LibraryItemRow } from './items.schema'
 
@@ -93,4 +94,45 @@ export function replaceLibraryItemOrderForScope(
 
 export function deleteLibraryItemOrderForScope(scopeKey: string): { changes: number } {
 	return db().delete(libraryItemOrder).where(eq(libraryItemOrder.scopeKey, scopeKey)).run()
+}
+
+/** Remove all `library_item_order` rows for `collectionId` (all + each tag slice). */
+export function deleteOrderScopesForCollection(collectionId: string, tagIds: string[]): { changes: number } {
+	const cid = typeof collectionId === 'string' ? collectionId.trim() : ''
+	if (!cid) return { changes: 0 }
+	return db().transaction((tx) => {
+		let total = tx.delete(libraryItemOrder).where(eq(libraryItemOrder.scopeKey, cid)).run().changes
+		for (const tid of tagIds) {
+			if (typeof tid !== 'string' || !tid.trim()) continue
+			total += tx
+				.delete(libraryItemOrder)
+				.where(eq(libraryItemOrder.scopeKey, `${cid}::${tid.trim()}`))
+				.run().changes
+		}
+		return { changes: total }
+	})
+}
+
+/**
+ * Batch-update `sort_index` for `library_item_order` in one scope.
+ * `changes[].id` → `library_item_id`, `changes[].idx` → `sort_index`.
+ */
+export function updateIndices(scopeKey: string, changes: ReorderItemPayload): { changes: number } {
+	return db().transaction((tx) => {
+		let total = 0
+		for (const change of changes) {
+			const r = tx
+				.update(libraryItemOrder)
+				.set({ sortIndex: change.idx })
+				.where(
+					and(
+						eq(libraryItemOrder.scopeKey, scopeKey),
+						eq(libraryItemOrder.libraryItemId, change.id)
+					)
+				)
+				.run()
+			total += r.changes
+		}
+		return { changes: total }
+	})
 }

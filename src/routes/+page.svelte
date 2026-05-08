@@ -5,7 +5,7 @@
 	import LibSearch from './LibSearch.svelte'
 	import WidthSlider from './WidthSlider.svelte'
 	import { global } from '$lib/lib/global.svelte'
-	import { addLibraryDroppedMediaItem, libraryContent } from '$lib/libraryContent.svelte'
+	import { addMediaItem, libraryContent, patchLibraryItem } from '$lib/libraryContent.svelte'
 	import { libraryTags, patchLibraryTag } from '$lib/libraryTags.svelte'
 	import { mockSidebarNav } from '$lib/mocks'
 	import {
@@ -27,7 +27,7 @@
 
 	const TAG_EDIT_FLOAT_ID = 'home-edit-tag-float'
 
-	let gridColumnSizeIndex = $state(0)
+	let gridColumnSizeIndex = $state(indexForGridColumnSize('large'))
 	const gridColumnWidthPx = $derived(
 		global.onHomePage ? COL_SIZES.large : GRID_COLUMN_WIDTHS[gridColumnSizeIndex]
 	)
@@ -39,11 +39,11 @@
 		void tab
 		void global.collections
 		void libraryTags.byId
-		let stored: GridColumnSize = 'small'
+		let stored: GridColumnSize = 'large'
 		if (tab === 'all') {
-			stored = global.currCollection?.columnSize ?? 'small'
+			stored = global.currCollection?.columnSize ?? 'large'
 		} else {
-			stored = libraryTags.byId[tab]?.columnSize ?? 'small'
+			stored = libraryTags.byId[tab]?.columnSize ?? 'large'
 		}
 		gridColumnSizeIndex = indexForGridColumnSize(stored)
 	})
@@ -84,6 +84,7 @@
 	let libToolbarTabsEl = $state<HTMLDivElement | null>(null)
 	let contentFileDropOverlay = $state(false)
 	let currTags = $derived(global.currTags)
+	let isUploadLoading = $state(false)
 
 	const shellCollection = $derived(global.currCollection ?? global.collections[0])
 
@@ -289,7 +290,7 @@
 				color: { ...tagEditColor },
 				collectionId: currentCid,
 				idx: nextIdx,
-				columnSize: global.currCollection?.columnSize ?? 'small'
+				columnSize: global.currCollection?.columnSize ?? 'large'
 			})
 			closeTagEditFloat()
 			return
@@ -339,10 +340,14 @@
 	}
 	function deleteTab(tab: ToolbarTab) {
 		const tagId = tab.id
-		libraryContent.items = libraryContent.items.map((item) => ({
-			...item,
-			tags: item.tags.filter((t: string) => t !== tagId)
-		}))
+		const meta = libraryTags.byId[tagId]
+		if (!meta) return
+		const cid = meta.collectionId
+		for (const item of libraryContent.items) {
+			if (!item.collectionIds.includes(cid)) continue
+			if (!item.tags.includes(tagId)) continue
+			patchLibraryItem(item.id, { tags: item.tags.filter((t: string) => t !== tagId) })
+		}
 		void global.deleteTagAndReindex(tagId)
 		if (currentTab === tagId) global.currFilterTab = 'all'
 	}
@@ -434,7 +439,7 @@
 		if (contentDropZoneEl && next && contentDropZoneEl.contains(next)) return
 		contentFileDropOverlay = false
 	}
-	function onContentFileDrop(e: DragEvent) {
+	async function onContentFileDrop(e: DragEvent) {
 		if (!dataTransferHasOnlyImageOrVideoFiles(e.dataTransfer)) return
 		e.preventDefault()
 		contentFileDropOverlay = false
@@ -446,15 +451,16 @@
 			if (!droppedFileLooksLikeImageOrVideo(file)) continue
 			const mediaType = mediaTypeForDroppedFile(file)
 			if (!mediaType) continue
-			const blobUrl = URL.createObjectURL(file)
-			const row = addLibraryDroppedMediaItem({
-				blobUrl,
-				fileName: file.name,
+			const col = global.collections.find((c) => c.id === cid)
+			isUploadLoading = true
+			await addMediaItem({
+				file,
+				mediaStore: { scope: 'collection', collectionId: cid, collectionName: col?.name },
 				mediaType,
 				collectionId: cid,
 				activeTagFilter: filter
 			})
-			global.onAddItem(row.id)
+			isUploadLoading = false
 		}
 	}
 
@@ -582,18 +588,19 @@
 			ondrop={onContentFileDrop}
 			role="presentation"
 		>
-			<Content
-				items={filteredItems}
-				{gridView}
-				columnWidth={gridColumnWidthPx}
-				reorderable={!global.onHomePage}
-			/>
-			<!-- {#if true} -->
+			<div class="home__content-drop__fill">
+				<Content
+					items={filteredItems}
+					{gridView}
+					columnWidth={gridColumnWidthPx}
+					reorderable={!global.onHomePage}
+				/>
+			</div>
 			{#if contentFileDropOverlay}
 				<div class="home__content-drop__overlay" aria-hidden="true">
 					<div class="home__content-drop__inner">
 						<div class="home__content-drop__icon" aria-hidden="true">
-							<UploadIcon context="big" />
+							<UploadIcon context="big" loading={isUploadLoading} />
 						</div>
 						<p class="home__content-drop__label">Drop Your Files Here</p>
 					</div>
@@ -642,12 +649,22 @@
 			// take up entire space + allow to shrink
 			flex: 1;
 			min-height: 0;
+			display: flex;
+			flex-direction: column;
 			overflow-y: auto;
 			overflow-x: hidden;
 			overscroll-behavior: contain;
 			padding-bottom: 30px;
 		}
+		&__content-drop__fill {
+			/* basis 0 so this row fills the scroll pane; auto basis stays content-height → collapses when empty */
+			flex: 1 1 0;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+		}
 		&__content-drop__overlay {
+			height: calc(100% - 20px);
 			position: absolute;
 			inset: 0;
 			z-index: 40;
@@ -655,16 +672,31 @@
 			align-items: center;
 			justify-content: center;
 			padding: 24px;
-			border-radius: 18px;
 			border: 1px dashed rgba(var(--textColor1), 0.22);
-			background: color-mix(in srgb, var(--bg-color) 78%, transparent);
-			backdrop-filter: blur(6px);
+			background: transparent;
+			backdrop-filter: blur(5px);
+			overflow: hidden;
+			isolation: isolate;
+
+			&::before {
+				content: '';
+				position: absolute;
+				inset: 0;
+				border-radius: inherit;
+				background: color-mix(in srgb, var(--bg-color) 78%, transparent);
+				opacity: 0.2;
+				animation: drop-zone-anim 2s ease-in-out infinite alternate;
+				pointer-events: none;
+				z-index: 0;
+			}
 		}
 		&__content-drop__inner {
+			position: relative;
+			z-index: 1;
 			display: flex;
 			flex-direction: column;
 			align-items: center;
-			gap: 14px;
+			gap: 22px;
 		}
 		&__content-drop__icon {
 			width: 72px;
@@ -672,9 +704,7 @@
 			opacity: 0.35;
 		}
 		&__content-drop__label {
-			margin: 0;
-			@include text-style(0.55, 500, 1.15rem);
-			letter-spacing: 0.02em;
+			@include text-style(0.5, 500, 1.15rem);
 		}
 		&__sidebar {
 			width: 200px;
@@ -706,6 +736,16 @@
 			}
 		}
 	}
+
+	@keyframes drop-zone-anim {
+		from {
+			opacity: 0.4;
+		}
+		to {
+			opacity: 0.9;
+		}
+	}
+
 	.divider {
 		width: 100%;
 		border-top: var(--divider-border);
@@ -737,7 +777,7 @@
 			display: flex;
 			gap: 3px;
 			overflow: auto;
-			padding: 4px 0px 4px 4px;
+			padding: 4px 5px 4px 4px;
 			margin-left: -4px;
 			scrollbar-width: none;
 			mask-repeat: no-repeat;

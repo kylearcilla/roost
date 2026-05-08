@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '../scss/app.scss'
+	import { v4 as uuidv4 } from 'uuid'
 
 	import AbsFloatElem from '$lib/components/AbsFloatElem.svelte'
 	import FloatInput from '$lib/components/FloatInput.svelte'
@@ -10,9 +11,17 @@
 		ELECTRON_CHROME_INSET_CTX,
 		type ElectronChromeInsetBox
 	} from '$lib/electronChromeInsetContext'
+	import { use_mocks } from '$lib/env'
+	import { db } from '$lib/lib/DBManager'
 	import { global } from '$lib/lib/global.svelte'
 	import { onMount, setContext } from 'svelte'
 	import { extractUrl } from '$lib/lib/collection-sources'
+	import {
+		persistVolatileImageHref,
+		saveImportedUserFile,
+		storedImageSrc,
+		type ImportedMediaStoreScope
+	} from '$lib/lib/importedMedia'
 	import { DEFAULT_IMG_UPLOAD_CONSTRAINTS, validateImgURL } from '$lib/lib/fetch-content'
 
 	let { children } = $props()
@@ -28,9 +37,18 @@
 
 	const CHROME_WALLPAPER_FLOAT_ID = 'chrome-wallpaper-float'
 
-	const selectedCollection = $derived(global.currCollection ?? global.collections[0])
+	const selectedCollection = $derived(global.currCollection ?? global.collections[0] ?? undefined)
+
+	function wallpaperImportStore(): ImportedMediaStoreScope | null {
+		const c = selectedCollection
+		if (!c) return null
+		return { scope: 'collection', collectionId: c.id, collectionName: c.name }
+	}
+
 	const hasWallpaper = $derived.by(() => {
-		const w = selectedCollection.wallpaper
+		const c = selectedCollection
+		if (!c) return false
+		const w = c.wallpaper
 		if (!w) return false
 		return Boolean(w?.url?.trim() || w?.path?.trim())
 	})
@@ -47,6 +65,12 @@
 
 	onMount(() => {
 		electronChromeInset.active = roostTitleBarInset()
+		if (browser && !use_mocks && db.isAvailable) {
+			void (async () => {
+				await global.hydrateFromDb()
+				await global.fetchUser()
+			})()
+		}
 	})
 
 	$effect(() => {
@@ -72,12 +96,26 @@
 		window.setTimeout(() => (imgSubmitJitter = false), 320)
 	}
 
-	async function applyWallpaperHref(href: string) {
+	async function applyWallpaperMedia(patch: { url?: string; path?: string }) {
+		const c = selectedCollection
+		if (!c) return
 		await global.updateCollection({
-			...selectedCollection,
-			wallpaper: { type: 'image', url: href, dims: 'auto' },
+			...c,
+			wallpaper: { id: uuidv4(), type: 'image', url: patch.url, path: patch.path, dims: 'auto' },
 			wallpaperFocusY: undefined
 		})
+	}
+
+	async function applyWallpaperHref(href: string) {
+		if (href.startsWith('blob:') || href.startsWith('data:')) {
+			const st = wallpaperImportStore()
+			if (!st) return
+			const r = await persistVolatileImageHref(href, st)
+			if ('path' in r) await applyWallpaperMedia({ path: r.path })
+			else await applyWallpaperMedia({ url: r.url })
+			return
+		}
+		await applyWallpaperMedia({ url: href })
 	}
 
 	function openWallpaperFilePicker() {
@@ -89,7 +127,11 @@
 		const file = el.files?.[0]
 		el.value = ''
 		if (!file || !file.type.startsWith('image/')) return
-		await applyWallpaperHref(URL.createObjectURL(file))
+		const st = wallpaperImportStore()
+		if (!st) return
+		const saved = await saveImportedUserFile(file, st)
+		if (saved.ok) await applyWallpaperMedia({ path: saved.absolutePath })
+		else await applyWallpaperHref(URL.createObjectURL(file))
 		closeWallpaperFloat()
 	}
 
@@ -163,55 +205,53 @@
 	{#if electronChromeInset.active}
 		<div class="electron-chrome-row">
 			<div class="electron-chrome-drag" aria-hidden="true"></div>
-			{#if !global.onHomePage}
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div
-					class="electron-chrome-trailing"
-					onmouseenter={() => (chromeHovered = true)}
-					onmouseleave={() => (chromeHovered = false)}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div
+				class="electron-chrome-trailing"
+				onmouseenter={() => (chromeHovered = true)}
+				onmouseleave={() => (chromeHovered = false)}
+			>
+				<button
+					type="button"
+					class="lib-header__wallpaper-btn"
+					class:lib-header__wallpaper-btn--visible={showChromeWallpaper}
+					onclick={(e) => {
+						e.stopPropagation()
+						openWallpaperFloat()
+					}}
 				>
-					<button
-						type="button"
-						class="lib-header__wallpaper-btn"
-						class:lib-header__wallpaper-btn--visible={showChromeWallpaper}
-						onclick={(e) => {
-							e.stopPropagation()
-							openWallpaperFloat()
-						}}
-					>
-						{hasWallpaper ? 'Change Wallpaper' : 'Add Wallpaper'}
+					{hasWallpaper ? 'Change Wallpaper' : 'Add Wallpaper'}
+				</button>
+				<div class="lib-header__user">
+					<button type="button" class="lib-header__user-name" onclick={() => {}}>
+						{global.user?.displayName?.trim() || 'You'}
 					</button>
-					<div class="lib-header__user">
-						<button type="button" class="lib-header__user-name" onclick={() => {}}>
-							{global.user.displayName}
-						</button>
-						{#if global.user.avatarUrl}
-							<img
-								class="lib-header__avatar"
-								src={global.user.avatarUrl}
-								alt=""
-								width="36"
-								height="36"
-							/>
-						{/if}
-					</div>
-					<FloatInput
-						dmenuId={CHROME_WALLPAPER_FLOAT_ID}
-						bind:hidden={imgFloatHidden}
-						bind:value={imgLinkDraft}
-						inputType="imgUrl"
-						position={{ top: 44, right: 16 }}
-						positionMode="fixed"
-						placeholder="Paste or type image URL…"
-						onClose={closeWallpaperFloat}
-						onPress={submitWallpaperFloat}
-						submitReady={Boolean(imgSubmitShowArrow && extractUrl(imgLinkDraft))}
-						submitJitter={imgSubmitJitter}
-						onImgUpload={openWallpaperFilePicker}
-						isDisabled={imgSubmitValidating}
-					/>
+					{#if global.user?.avatarUrl}
+						<img
+							class="lib-header__avatar"
+							src={storedImageSrc(global.user.avatarUrl)}
+							alt=""
+							width="36"
+							height="36"
+						/>
+					{/if}
 				</div>
-			{/if}
+				<FloatInput
+					dmenuId={CHROME_WALLPAPER_FLOAT_ID}
+					bind:hidden={imgFloatHidden}
+					bind:value={imgLinkDraft}
+					inputType="imgUrl"
+					position={{ top: 44, right: 16 }}
+					positionMode="fixed"
+					placeholder="Paste or type image URL…"
+					onClose={closeWallpaperFloat}
+					onPress={submitWallpaperFloat}
+					submitReady={Boolean(imgSubmitShowArrow && extractUrl(imgLinkDraft))}
+					submitJitter={imgSubmitJitter}
+					onImgUpload={openWallpaperFilePicker}
+					isDisabled={imgSubmitValidating}
+				/>
+			</div>
 		</div>
 	{/if}
 

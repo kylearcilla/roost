@@ -1,6 +1,11 @@
 <script lang="ts">
 	import { abs, cursorPos } from '$lib'
+	import FloatInput from '$lib/components/FloatInput.svelte'
 	import Modal from '$lib/components/Modal.svelte'
+	import { extractUrl } from '$lib/lib/collection-sources'
+	import { DEFAULT_IMG_UPLOAD_CONSTRAINTS, validateImgURL } from '$lib/lib/fetch-content'
+	import { persistVolatileImageHref, saveImportedUserFile, storedImageSrc } from '$lib/lib/importedMedia'
+	import { browser } from '$app/environment'
 	import { global } from '$lib/lib/global.svelte'
 
 	type Props = {
@@ -8,35 +13,62 @@
 		onClose: () => void
 	}
 	let { open, onClose }: Props = $props()
-    
-	const storagePath = '~/roost'
+
+	const SETTINGS_AVATAR_IMG_FLOAT_ID = 'settings-avatar-img-float'
 	const storageSize = '28 MB'
+
+	const dataRootPath = $derived.by(() => {
+		if (!browser) return ''
+		const p = window.roost?.userDataPath?.trim()
+		return p ?? ''
+	})
+
+	async function revealDataFolder() {
+		if (!dataRootPath || !window.electronAPI?.revealUserDataInFileManager) return
+		await window.electronAPI.revealUserDataInFileManager()
+	}
 	const AVATAR_MENU_ID = 'settings-avatar-menu'
 
 	const avatarMenuItems: DropdownItem[] = [
 		{ type: 'btn', label: 'New image', id: 'replace' },
-        { type: 'divider' },
+		{ type: 'divider' },
 		{ type: 'btn', label: 'Remove image', id: 'remove' }
 	]
 
-	let avatarUrl = $state<string | undefined>(global.user.avatarUrl)
+	let avatarUrl = $state<string | undefined>(global.user?.avatarUrl)
 	let avatarFileInputEl = $state<HTMLInputElement | null>(null)
-	let nameDraft = $state(global.user.displayName)
-    let isNameFocused = $state(false)
+	let nameDraft = $state(global.user?.displayName ?? '')
+	let isNameFocused = $state(false)
+
+	let avatarImgFloatHidden = $state(true)
+	let avatarImgLinkDraft = $state('')
+	let avatarImgSubmitJitter = $state(false)
+	let avatarImgSubmitShowArrow = $state(false)
+	let avatarImgSubmitValidating = $state(false)
 
 	$effect(() => {
 		if (!open) return
-		avatarUrl = global.user.avatarUrl
-		nameDraft = global.user.displayName
+		avatarUrl = global.user?.avatarUrl
+		nameDraft = global.user?.displayName ?? ''
+	})
+
+	$effect(() => {
+		if (open) return
+		avatarImgFloatHidden = true
+		avatarImgLinkDraft = ''
+		avatarImgSubmitShowArrow = false
+	})
+
+	$effect(() => {
+		if (avatarImgFloatHidden) return
+		if (avatarImgLinkDraft.trim() !== '') return
+		avatarImgSubmitShowArrow = false
 	})
 
 	async function commitName() {
 		isNameFocused = false
 		const next = nameDraft.trim()
-		if (!next) {
-			nameDraft = global.user.displayName
-			return
-		}
+		if (!global.user) await global.fetchUser()
 		await global.updateUser({ displayName: next })
 		nameDraft = next
 	}
@@ -47,6 +79,9 @@
 	function onAvatarContextMenu(e: MouseEvent) {
 		if (!avatarUrl) {
 			e.preventDefault()
+			cursorPos.top = e.clientY
+			cursorPos.left = e.clientX
+			openAvatarImgFloat()
 			return
 		}
 		e.preventDefault()
@@ -60,7 +95,7 @@
 			offset: { top: 0, left: 0 },
 			onOptnClick: (_label, id) => {
 				abs.close(AVATAR_MENU_ID)
-				if (id === 'replace') avatarFileInputEl?.click()
+				if (id === 'replace') openAvatarImgFloat()
 				if (id === 'remove') {
 					avatarUrl = undefined
 					global.updateUser({ avatarUrl: undefined })
@@ -68,19 +103,110 @@
 			}
 		})
 	}
-	function onSkeletonClick() {
+
+	function closeAvatarImgFloat() {
+		avatarImgFloatHidden = true
+		avatarImgLinkDraft = ''
+		avatarImgSubmitShowArrow = false
+	}
+
+	function openAvatarImgFloat() {
+		avatarImgLinkDraft = ''
+		avatarImgSubmitShowArrow = false
+		avatarImgFloatHidden = false
+	}
+
+	function openAvatarImgFilePicker() {
 		avatarFileInputEl?.click()
 	}
-	function onAvatarFileChange(e: Event) {
+
+	function triggerAvatarImgJitter() {
+		avatarImgSubmitJitter = true
+		window.setTimeout(() => (avatarImgSubmitJitter = false), 320)
+	}
+
+	async function applyAvatarStored(stored: string) {
+		avatarUrl = stored
+		if (!global.user) await global.fetchUser()
+		void global.updateUser({ avatarUrl: stored })
+	}
+
+	async function applyAvatarHref(href: string) {
+		if (href.startsWith('blob:') || href.startsWith('data:')) {
+			const r = await persistVolatileImageHref(href, { scope: 'user' })
+			await applyAvatarStored('path' in r ? r.path : r.url)
+			return
+		}
+		await applyAvatarStored(href)
+	}
+
+	async function submitAvatarImgFloat() {
+		const raw = avatarImgLinkDraft.trim()
+		if (!raw) return
+		const extracted = extractUrl(avatarImgLinkDraft)
+		if (!extracted) {
+			if (raw) triggerAvatarImgJitter()
+			avatarImgSubmitShowArrow = false
+			return
+		}
+		if (!avatarImgSubmitShowArrow) {
+			avatarImgSubmitShowArrow = true
+			return
+		}
+		const again = extractUrl(avatarImgLinkDraft)
+		if (!again) {
+			triggerAvatarImgJitter()
+			avatarImgSubmitShowArrow = false
+			return
+		}
+		const href = again.href
+		if (href.startsWith('blob:') || href.startsWith('data:')) {
+			await applyAvatarHref(href)
+			closeAvatarImgFloat()
+			return
+		}
+		avatarImgSubmitValidating = true
+		try {
+			await validateImgURL({ url: href, constraints: DEFAULT_IMG_UPLOAD_CONSTRAINTS })
+			await applyAvatarHref(href)
+			closeAvatarImgFloat()
+		} catch (e) {
+			if (e instanceof DOMException && e.name === 'AbortError') return
+			triggerAvatarImgJitter()
+			avatarImgSubmitShowArrow = false
+		} finally {
+			avatarImgSubmitValidating = false
+		}
+	}
+
+	function onSkeletonClick(e: MouseEvent) {
+		cursorPos.top = e.clientY
+		cursorPos.left = e.clientX
+		openAvatarImgFloat()
+	}
+
+	function onAvatarImgFilePicked(e: Event) {
 		const el = e.currentTarget as HTMLInputElement
 		const file = el.files?.[0]
 		el.value = ''
 		if (!file || !file.type.startsWith('image/')) return
-		const href = URL.createObjectURL(file)
-		avatarUrl = href
-		void global.updateUser({ avatarUrl: href })
+		void (async () => {
+			const saved = await saveImportedUserFile(file, { scope: 'user' })
+			if (saved.ok) await applyAvatarStored(saved.absolutePath)
+			else await applyAvatarHref(URL.createObjectURL(file))
+			closeAvatarImgFloat()
+		})()
 	}
 </script>
+
+<svelte:window
+	onkeydown={(e) => {
+		if (e.key !== 'Escape') return
+		if (avatarImgFloatHidden) return
+		e.preventDefault()
+		closeAvatarImgFloat()
+	}}
+/>
 
 {#if open}
 	<Modal
@@ -108,14 +234,14 @@
 						>
 							{#if avatarUrl}
 								<div class="settings__avatar">
-									<img src={avatarUrl} alt="" draggable="false" />
+									<img src={storedImageSrc(avatarUrl)} alt="" draggable="false" />
 								</div>
 							{:else}
 								<button
 									type="button"
 									class="settings__avatar-skeleton"
 									aria-label="Add profile image"
-									onclick={onSkeletonClick}
+									onclick={(e) => onSkeletonClick(e)}
 								>
 									<svg
 										class="settings__avatar-placeholder-svg"
@@ -143,6 +269,7 @@
 									class="settings__name-input"
 									autocomplete="name"
 									spellcheck="false"
+									placeholder="Enter your name"
 									bind:value={nameDraft}
                                     onfocus={() => isNameFocused = true}
 									onblur={() => void commitName()}
@@ -157,11 +284,15 @@
 						<div class="settings__field">
 							<span class="settings__label">Storage Location</span>
 							<div class="settings__storage" style:margin-top="5px">
-								<button 
-                                    class="settings__path"
-                                 >
-                                {storagePath}
-                                </button>
+								<button
+									type="button"
+									class="settings__path"
+									title={dataRootPath ? `${dataRootPath} — show in file manager` : ''}
+									disabled={!dataRootPath}
+									onclick={() => void revealDataFolder()}
+								>
+									{dataRootPath || '—'}
+								</button>
                                 
 								<span class="settings__size">{storageSize}</span>
 							</div>
@@ -178,12 +309,26 @@
 					aria-hidden="true"
 					tabindex="-1"
 					bind:this={avatarFileInputEl}
-					onchange={onAvatarFileChange}
+					onchange={onAvatarImgFilePicked}
 				/>
 			</div>
 		{/snippet}
 	</Modal>
 {/if}
+
+<FloatInput
+	dmenuId={SETTINGS_AVATAR_IMG_FLOAT_ID}
+	bind:hidden={avatarImgFloatHidden}
+	bind:value={avatarImgLinkDraft}
+	inputType="imgUrl"
+	placeholder="Paste or type image URL…"
+	onClose={closeAvatarImgFloat}
+	onPress={submitAvatarImgFloat}
+	submitReady={Boolean(avatarImgSubmitShowArrow && extractUrl(avatarImgLinkDraft))}
+	submitJitter={avatarImgSubmitJitter}
+	onImgUpload={openAvatarImgFilePicker}
+	isDisabled={avatarImgSubmitValidating}
+/>
 
 <style lang="scss">
 	@use '../scss/mixins.scss' as *;
@@ -192,15 +337,16 @@
 		position: relative;
 		display: flex;
 		flex-direction: column;
-		width: 500px;
-		height: 370px;
+		width: 560px;
+		min-height: 370px;
 		padding: 20px 24px 24px 20px;
 		box-sizing: border-box;
 		border-radius: 0;
 		border: none;
 		box-shadow: none;
+		gap: 120px;
 
-		--img-percentage: 35%;
+		--img-percentage: 45%;
 		--padding: 28px;
 
 		&__file {
@@ -295,6 +441,7 @@
 			background: rgba(var(--textColor1), 0.04);
 			border-radius: 10px;
 			padding: 12px 14px 13px 14px;
+			margin-left: -5px;
 			border: none;
 			box-shadow: none;
             transition: box-shadow 0.3s ease-in-out;
@@ -327,22 +474,27 @@
 			justify-content: space-between;
 			gap: 16px;
 			min-width: 0;
-
 		}
 		&__path {
             font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-			@include text-style(0.82, 450, 1.3rem);
+			@include text-style(0.82, 450, 1.12rem);
 			min-width: 0;
 			overflow: hidden;
 			text-overflow: ellipsis;
 			white-space: nowrap;
-            &:hover {
+			cursor: pointer;
+			&:disabled {
+				cursor: default;
+				opacity: 0.5;
+			}
+            &:hover:not(:disabled) {
                 text-decoration: underline;
             }
 		}
 		&__size {
 			flex-shrink: 0;
 			@include text-style(0.4, 400, 1.25rem);
+			display: none;
 		}
 		&__export {
 			margin-top: auto;
@@ -354,10 +506,11 @@
 			cursor: pointer;
 			font: inherit;
 			text-align: left;
-			@include text-style(0.44, 500, 1.25rem);
+			@include text-style(1, 400, 1.25rem);
+			opacity: 0.35;
 
 			&:hover {
-				@include text-style(0.62, 500, 1.25rem);
+				opacity: 0.8;
 				text-decoration: underline;
 			}
 		}

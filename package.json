@@ -11,10 +11,9 @@
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"electron:rebuild": "electron-rebuild -f -w better-sqlite3 && node electron/scripts/macos-native-sign.mjs",
-		"db:rebuild:for-node": "npm rebuild better-sqlite3",
-		"db:generate": "npm run db:rebuild:for-node && node electron/scripts/run-drizzle-kit-app-db.mjs generate",
-		"db:migrate": "npm run db:rebuild:for-node && node electron/scripts/run-drizzle-kit-app-db.mjs migrate",
-		"db:studio": "npm run db:rebuild:for-node && node electron/scripts/run-drizzle-kit-app-db.mjs migrate && node electron/scripts/run-drizzle-kit-app-db.mjs studio",
+		"db:generate": "node electron/scripts/run-drizzle-kit-app-db.mjs generate",
+		"db:migrate": "node electron/scripts/run-drizzle-kit-app-db.mjs migrate",
+		"db:studio": "node electron/scripts/run-drizzle-kit-app-db.mjs migrate && node electron/scripts/run-drizzle-kit-app-db.mjs studio",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:electron": "tsc -p electron/tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
@@ -23,7 +22,8 @@
 		"electron:dev:live": "VITE_USE_MOCK_DATA=false node electron/scripts/dev.mjs",
 		"electron:dev:rebuild": "node electron/scripts/dev.mjs --rebuild",
 		"electron:unquarantine": "xattr -cr node_modules/electron",
-		"electron:build": "npm run build && npm run electron:rebuild && electron ."
+		"electron:build": "npm run build && npm run electron:rebuild && electron .",
+		"electron:pack": "npm run build && npm run electron:rebuild && electron-builder"
 	},
 	"devDependencies": {
 		"@electron/rebuild": "^4.0.2",
@@ -32,6 +32,7 @@
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
 		"drizzle-kit": "^0.31.10",
 		"electron": "^39.2.7",
+		"electron-builder": "^26.8.1",
 		"sass": "^1.99.0",
 		"svelte": "^5.55.2",
 		"svelte-check": "^4.4.6",
@@ -42,6 +43,33 @@
 		"better-sqlite3": "^12.5.0",
 		"drizzle-orm": "^0.45.2",
 		"jiti": "^2.7.0",
-		"masonry-layout": "^4.2.2"
+		"masonry-layout": "^4.2.2",
+		"uuid": "^14.0.0"
+	},
+	"build": {
+		"appId": "app.roost.desktop",
+		"productName": "Roost",
+		"directories": {
+			"output": "release",
+			"buildResources": "build-resources"
+		},
+		"files": [
+			"build/**/*",
+			"electron/**/*",
+			"package.json"
+		],
+		"asar": true,
+		"asarUnpack": ["**/node_modules/better-sqlite3/**/*"],
+		"mac": {
+			"category": "public.app-category.graphics-design",
+			"target": ["dmg", "zip"]
+		},
+		"win": {
+			"target": ["nsis"]
+		},
+		"linux": {
+			"target": ["AppImage"],
+			"category": "Graphics"
+		}
 	}
 }

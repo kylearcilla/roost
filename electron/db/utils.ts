@@ -1,6 +1,11 @@
 import { eq, isNull, sql, type SQLWrapper } from 'drizzle-orm'
 import { integer, uuid, varchar, text as pgText, timestamp, boolean, date as pgDate, bigint } from 'drizzle-orm/pg-core'
 
+type ReorderItemPayload = {
+  id: string
+  idx: number
+}[]
+
 type IdOptions = {
   name?: string
   req?: boolean
@@ -219,5 +224,6 @@ export {
   bool,
   coalesce,
   orderColumns,
-  nullEq
+  nullEq,
+  ReorderItemPayload
 }

@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { browser } from '$app/environment'
 	import ContentCard from '$lib/components/ContentCard.svelte'
-	import { global } from '$lib/lib/global.svelte'
 	import { applyVisibleReorder } from '$lib/libraryContent.svelte'
 	import { reorderItemArr } from '$lib/reorderItemArr'
+	import { global } from '$lib/lib/global.svelte'
 	import type Masonry from 'masonry-layout'
 
 	type MasonryInstance = Masonry & { options: { columnWidth: number; gutter: number } }
@@ -24,6 +24,7 @@
 			? items.slice().sort((a, b) => a.idx - b.idx)
 			: items.slice()
 	)
+	const isEmpty = $derived(sortedItems.length === 0)
 	const GUTTER = 5
 	const columnW = $derived(Math.max(120, Math.round(columnWidth)))
 
@@ -32,7 +33,6 @@
 	let resizeObserver: ResizeObserver | null = null
 	let itemSrcId = $state<string | null>(null)
 	let itemTargetId = $state<string | null>(null)
-	/** Sync arm so `dragstart` sees it in the same gesture (before `$state` would flush). */
 	let dragArmId: string | null = null
 
 	function destroyMasonry() {
@@ -134,7 +134,6 @@
 
 		const { newArray } = reorderItemArr({ array: arr, srcIdx, targetIdx })
 		applyVisibleReorder(arr, newArray)
-		global.syncItemOrderCache()
 
 		tick().then(() => {
 			msnry?.reloadItems()
@@ -148,6 +147,11 @@
 		const gv = gridView
 		void sortedItems.map((i) => `${i.id}:${i.idx}`).join(',')
 		void columnW
+
+		if (isEmpty) {
+			destroyMasonry()
+			return
+		}
 
 		if (!gv) {
 			destroyMasonry()
@@ -173,40 +177,103 @@
 
 <div
 	bind:this={containerEl}
-	class="lib-masonry"
+	class="lib-content lib-masonry"
 	class:lib-masonry--list={!gridView}
-	role="list"
+	class:lib-content--empty={isEmpty}
+	role={isEmpty ? 'region' : 'list'}
+	aria-label={isEmpty ? 'Library content' : undefined}
 	style:--col-width={`${columnW}px`}
 >
-	{#each sortedItems as item (item.id)}
-		<div
-			class="lib-masonry__cell drop-left-border"
-			class:drop-left-border--over={itemTargetId === item.id && itemSrcId !== item.id}
-			role="listitem"
-			data-id={item.id}
-		>
-		{#if reorderable}
-			<div
-				class="lib-masonry__handle"
-				draggable="true"
-				role="separator"
-				aria-orientation="horizontal"
-				aria-label="Drag to reorder"
-				onpointerdown={() => onHandlePointerDown(item.id)}
-				onpointerup={onHandlePointerUpArm}
-				onpointercancel={onHandlePointerUpArm}
-				ondragstart={(e) => onHandleDragStart(e, item.id)}
-				ondragend={onCellDragEnd}
-			></div>
-		{/if}
-			<div class="lib-masonry__card">
-				<ContentCard {item} />
-			</div>
+	{#if isEmpty}
+		<div class="lib-content__empty-stack">
+			<span class="lib-content__empty-icon" aria-hidden="true">0</span>
+			<p class="lib-content__empty-label" role="status">
+				{#if global.onHomePage}
+					No items in your library yet
+				{:else}
+					No items in this collection
+				{/if}
+			</p>
 		</div>
-	{/each}
+	{:else}
+		{#each sortedItems as item (item.id)}
+			<div
+				class="lib-masonry__cell drop-left-border"
+				class:drop-left-border--over={itemTargetId === item.id && itemSrcId !== item.id}
+				role="listitem"
+				data-id={item.id}
+			>
+				{#if reorderable}
+					<div
+						class="lib-masonry__handle"
+						draggable="true"
+						role="separator"
+						aria-orientation="horizontal"
+						aria-label="Drag to reorder"
+						onpointerdown={() => onHandlePointerDown(item.id)}
+						onpointerup={onHandlePointerUpArm}
+						onpointercancel={onHandlePointerUpArm}
+						ondragstart={(e) => onHandleDragStart(e, item.id)}
+						ondragend={onCellDragEnd}
+					></div>
+				{/if}
+				<div class="lib-masonry__card">
+					<ContentCard {item} />
+				</div>
+			</div>
+		{/each}
+	{/if}
 </div>
 
 <style lang="scss">
+	@use '../scss/mixins.scss' as *;
+
+	.lib-content {
+		position: relative;
+		width: 100%;
+		min-height: 0;
+
+		&--empty {
+			flex: 1 1 0;
+			min-height: 0;
+			width: 100%;
+			padding: 48px 24px;
+			box-sizing: border-box;
+		}
+
+		&__empty-stack {
+			position: absolute;
+			left: 50%;
+			top: 40%;
+			transform: translate(-50%, -50%);
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			gap: 6px;
+			text-align: center;
+			pointer-events: none;
+		}
+
+		&__empty-icon {
+			font-family:
+				ui-monospace,
+				'SF Mono',
+				SFMono-Regular,
+				Menlo,
+				Monaco,
+				Consolas,
+				'Liberation Mono',
+				'Courier New',
+				monospace;
+			font-variant-numeric: tabular-nums;
+			line-height: 1;
+			@include text-style(0.1, 300, 6rem);
+		}
+		&__empty-label {
+			@include text-style(0.15, 400, 1.5rem);
+		}
+	}
+
 	.lib-masonry {
 		position: relative;
 		width: 100%;
