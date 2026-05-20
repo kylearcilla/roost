@@ -41,7 +41,9 @@ export function collectionRowToApp(row: CollectionRow, wallpaper: Media | undefi
 		columnSize: coerceGridColumnSize(row.columnSize),
 		itemCount: row.itemCount ?? undefined,
 		wallpaper,
-		wallpaperFocusY: row.wallpaperFocusY ?? undefined
+		wallpaperFocusY: row.wallpaperFocusY ?? undefined,
+		pinId: row.pinId ?? undefined,
+		groupId: row.groupId ?? undefined
 	}
 }
 
@@ -99,7 +101,9 @@ export function collectionToDbRow(c: Collection): CollectionInsert {
 		columnSize: c.columnSize ?? 'large',
 		itemCount: c.itemCount ?? null,
 		wallpaperId: c.wallpaper?.id ?? null,
-		wallpaperFocusY: c.wallpaperFocusY ?? null
+		wallpaperFocusY: c.wallpaperFocusY ?? null,
+		pinId: c.pinId ?? null,
+		groupId: c.groupId ?? null
 	}
 }
 
@@ -129,6 +133,8 @@ export function collectionPatchToDb(patch: Partial<Collection>): Partial<Collect
 	if (patch.itemCount !== undefined) out.itemCount = patch.itemCount ?? null
 	if (patch.wallpaper !== undefined) out.wallpaperId = patch.wallpaper?.id ?? null
 	if (patch.wallpaperFocusY !== undefined) out.wallpaperFocusY = patch.wallpaperFocusY ?? null
+	if ('pinId' in patch) out.pinId = patch.pinId ?? null
+	if ('groupId' in patch) out.groupId = patch.groupId ?? null
 	return out
 }
 

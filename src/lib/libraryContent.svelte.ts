@@ -2,7 +2,15 @@ import { use_mocks } from '$lib/env'
 import { db } from '$lib/lib/DBManager'
 import { nextIdxForAppend } from '$lib/lib/collections'
 import { releaseMedia, saveImportedUserFile, type ImportedMediaStoreScope } from '$lib/lib/importedMedia'
-import { isPortraitReelOrTikTokUrl, type FetchedContentMetadata } from '$lib/lib/fetch-content'
+import {
+	DEFAULT_IMG_UPLOAD_CONSTRAINTS,
+	extractTweetBodyForMetadata,
+	isPortraitReelOrTikTokUrl,
+	isTwitterStatusUrl,
+	validateImgURL,
+	twitterUserFromStatusUrl,
+	type FetchedContentMetadata
+} from '$lib/lib/fetch-content'
 import { mockContentItems } from '$lib/mocks/library'
 import type { LibraryItemInsert, LibraryItemRow } from '$shared/db/items.schema'
 
@@ -11,7 +19,12 @@ function inferKindFromMetadata(meta: FetchedContentMetadata): ContentKind {
 	if (meta.provider === 'youtube' || meta.provider === 'tiktok' || meta.provider === 'vimeo') {
 		return 'video'
 	}
-	if (meta.provider === 'x' || meta.provider === 'reddit' || meta.provider === 'instagram') {
+	if (
+		meta.provider === 'x' ||
+		meta.provider === 'reddit' ||
+		meta.provider === 'instagram' ||
+		meta.provider === 'pinterest'
+	) {
 		return 'post'
 	}
 	return 'article'
@@ -23,6 +36,33 @@ function sourceFromMetadata(meta: FetchedContentMetadata): ContentSource {
 		host = new URL(meta.sourceUrl).hostname.replace(/^www\./, '')
 	} catch {
 		host = 'link'
+	}
+	if (meta.provider === 'x') {
+		let screen = meta.author?.replace(/^@+/, '').trim()
+		if (!screen || /\s/.test(screen)) {
+			screen = twitterUserFromStatusUrl(meta.canonicalUrl ?? meta.sourceUrl) ?? ''
+		}
+		const label =
+			screen && !/\s/.test(screen)
+				? `@${screen}`
+				: (meta.siteName?.trim() || host || 'X')
+		return {
+			id: 'x',
+			name: label,
+			shortName: label.length > 24 ? `${label.slice(0, 22)}…` : label,
+			icon: '𝕏',
+			url: meta.canonicalUrl ?? meta.sourceUrl
+		}
+	}
+	if (meta.provider === 'pinterest') {
+		const label = meta.siteName?.trim() || 'Pinterest'
+		return {
+			id: 'web',
+			name: label,
+			shortName: label.length > 24 ? `${label.slice(0, 22)}…` : label,
+			icon: '📌',
+			url: meta.canonicalUrl ?? meta.sourceUrl
+		}
 	}
 	const name = meta.siteName?.trim() || host
 	return {
@@ -44,12 +84,22 @@ function buildItemFromFetchedMeta(
 		titleFallback?: string | null
 	}
 ): ContentItem {
-	const rawSnippet = (meta.subtitle ?? meta.description)?.trim()
+	const pageUrl = (meta.canonicalUrl ?? meta.sourceUrl).trim()
+	const isXStatus = meta.provider === 'x' && isTwitterStatusUrl(pageUrl)
+	const isPinterest = meta.provider === 'pinterest'
+
+	let rawSnippet = (meta.subtitle ?? meta.description)?.trim()
+	if (isXStatus) {
+		rawSnippet =
+			(meta.subtitle ?? meta.description)?.trim() ||
+			extractTweetBodyForMetadata(meta)?.trim() ||
+			rawSnippet
+	}
+
 	const snippet = rawSnippet || undefined
 	const author = meta.author?.trim()
 	const thumb = meta.imageUrl?.trim()
-	const pageUrl = (meta.canonicalUrl ?? meta.sourceUrl).trim()
-	const published = meta.publishedAt?.trim()
+	const published = isPinterest ? '' : meta.publishedAt?.trim()
 	const kind = inferKindFromMetadata(meta)
 	const forcePortrait =
 		meta.provider === 'tiktok' ||
@@ -66,22 +116,21 @@ function buildItemFromFetchedMeta(
 				dims: thumbDims
 			}
 		: undefined
-	const titlePick =
-		(meta.title ?? opts.titleFallback)?.trim() ||
-		meta.sourceUrl.trim()
+	const titleFromMeta = (meta.title ?? opts.titleFallback)?.trim()
+	const titlePick = isXStatus || isPinterest ? '' : titleFromMeta || meta.sourceUrl.trim()
 	return {
 		id: opts.id,
 		idx: opts.idx,
 		kind,
 		collectionIds: opts.collectionIds,
 		source: sourceFromMetadata(meta),
-		title: titlePick,
+		title: titlePick || undefined,
 		snippet,
 		media,
 		author: author || undefined,
 		meta: { notesCount: 0 },
 		tags: opts.tags,
-		createdAt: published || undefined,
+		createdAt: published ? published : undefined,
 		url: pageUrl || undefined
 	}
 }
@@ -228,6 +277,49 @@ export function addLibraryItemFromMetadata({ meta, collectionId, activeTagFilter
 }
 
 /** Title-only row (LibSearch leading `"…"`); no URL, source, or snippet. */
+/**
+ * Remote image URL → bare card (image only): no title, snippet, source, or `createdAt`.
+ * Validates like the card image URL float (`validateImgURL`).
+ */
+export async function addLibraryImageFromUrl(opts: {
+	url: string
+	collectionId: string
+	activeTagFilter: ContentToolbarFilter
+	signal?: AbortSignal
+}): Promise<ContentItem> {
+	const cid = opts.collectionId.trim()
+	if (!cid) throw new Error('addLibraryImageFromUrl: collection id required')
+	await validateImgURL({
+		url: opts.url,
+		constraints: DEFAULT_IMG_UPLOAD_CONSTRAINTS,
+		signal: opts.signal
+	})
+	const tag =
+		opts.activeTagFilter !== 'all' && String(opts.activeTagFilter).trim()
+			? String(opts.activeTagFilter).trim()
+			: null
+	const idx = nextIdxForAppend(libraryContent.items, cid, opts.activeTagFilter)
+	const id = crypto.randomUUID()
+	const tags = tag ? [tag] : []
+	const item: ContentItem = {
+		id,
+		idx,
+		kind: 'article',
+		collectionIds: [cid],
+		tags,
+		meta: { notesCount: 0 },
+		media: {
+			id: crypto.randomUUID(),
+			type: 'image',
+			url: opts.url,
+			dims: 'auto'
+		}
+	}
+	libraryContent.items = [...libraryContent.items, item]
+	await persistLibraryItemToDb(item)
+	return item
+}
+
 export function addLibraryTitleItem({
 	title,
 	collectionId,

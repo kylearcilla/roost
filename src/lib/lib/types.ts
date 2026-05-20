@@ -73,6 +73,10 @@ type Collection = {
 	itemCount?: number
 	wallpaper?: Media | null
 	wallpaperFocusY?: number
+	/** Saved toolbar filter: `Tag.id` for this collection, or unset / null for All. */
+	pinId?: string | null
+	/** Reserved for future sidebar / library groups. */
+	groupId?: string | null
 }
 
 type SidebarNavItem = {

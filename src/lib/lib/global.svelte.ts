@@ -58,20 +58,34 @@ export class Global {
 			this.syncTagsFromLibrary()
 		}
 	}
+	/**
+	 * Merge `patch` into a tag in SQLite (when live), then `libraryTags` + `currTags`.
+	 * Use for name, color, description, idx, columnSize — not for delete/reorder-only flows.
+	 */
+	async patchTag(
+		id: string,
+		patch: Partial<Pick<Tag, 'name' | 'color' | 'description' | 'idx' | 'columnSize'>>
+	) {
+		if (!libraryTags.byId[id]) return
+		if (use_mocks) {
+			patchLibraryTag(id, patch)
+			this.syncTagsFromLibrary()
+			return
+		}
+		if (!db.isAvailable) {
+			throw new Error('patchTag: live mode enabled but DB is not available')
+		}
+		await db.tags.patch(id, patch)
+		patchLibraryTag(id, patch)
+		this.syncTagsFromLibrary()
+	}
+
 	/** `id` is a tag id or a collection id (`all` view uses the collection id, not `'all'`). */
 	async setColSize(id: string, size: GridColumnSize) {
 		const tag = libraryTags.byId[id]
 		if (tag) {
 			if (tag.columnSize === size) return
-			if (use_mocks) {
-				patchLibraryTag(id, { columnSize: size })
-				return
-			}
-			if (!db.isAvailable) {
-				throw new Error('setColSize: live mode enabled but DB is not available')
-			}
-			await db.tags.patch(id, { columnSize: size })
-			patchLibraryTag(id, { columnSize: size })
+			await this.patchTag(id, { columnSize: size })
 			return
 		}
 		const i = this.collections.findIndex((c) => c.id === id)
@@ -163,6 +177,7 @@ export class Global {
 			this.selectedCollectionId = fromMocks[0]?.id ?? ''
 			this.onHomePage = !this.selectedCollectionId
 			this.syncTagsFromLibrary()
+			if (!this.onHomePage) this.applySavedTagFilterForCurrentCollection()
 			return this.collections
 		}
 		if (!db.isAvailable) {
@@ -183,6 +198,7 @@ export class Global {
 		this.selectedCollectionId = active
 		this.onHomePage = !active
 		this.syncTagsFromLibrary()
+		if (!this.onHomePage) this.applySavedTagFilterForCurrentCollection()
 		return this.collections
 	}
 
@@ -200,13 +216,44 @@ export class Global {
 		this.favorites = (await db.favorites.list()) as FavoriteFolder[]
 		await loadLibraryItemsFromDb()
 		this.syncTagsFromLibrary()
+		this.applySavedTagFilterForCurrentCollection()
 	}
 
 	setCollection(collectionId: string) {
 		if (!this.collections.some((c) => c.id === collectionId)) return
 		this.onHomePage = false
-		this.selectedCollectionId = collectionId
+		this.selectedCollectionId = collectionId.trim()
 		this.syncTagsFromLibrary()
+		this.applySavedTagFilterForCurrentCollection()
+	}
+
+	/** Persist default toolbar tag (`Tag.id`) for the current collection, or `null` for All. Always updates `collections` in memory first, then SQLite when available. */
+	async persistCollectionFilterPin(pinId: string | null) {
+		const cid = this.selectedCollectionId
+		if (!cid || this.onHomePage) return
+		const i = this.collections.findIndex((c) => c.id === cid)
+		if (i === -1) return
+		const prev = this.collections[i]
+		const next: Collection = {
+			...prev,
+			...(pinId === null || pinId === '' ? { pinId: undefined } : { pinId })
+		}
+		this.collections = this.collections.map((c, j) => (j === i ? next : c))
+		if (use_mocks) return
+		if (!db.isAvailable) return
+		await db.collections.patch(cid, { pinId: pinId === null || pinId === '' ? null : pinId })
+	}
+
+	/** If current collection has a saved `pinId` matching a tag in `currTags`, select it; else All. */
+	applySavedTagFilterForCurrentCollection() {
+		if (this.onHomePage || !this.selectedCollectionId) return
+		const col = this.collections.find((c) => c.id === this.selectedCollectionId)
+		const saved = (col?.pinId ?? '').trim()
+		if (saved && this.currTags.some((t) => t.id === saved)) {
+			this.currFilterTab = saved
+		} else {
+			this.currFilterTab = 'all'
+		}
 	}
 
 	async addCollection(collection: Collection) {
@@ -684,6 +731,17 @@ export class Global {
 		}
 		deleteLibraryTag(tagId)
 		this.applyIdxPatches(updated)
+		const colIx = this.collections.findIndex((c) => c.id === cid)
+		if (colIx !== -1 && (this.collections[colIx].pinId ?? '').trim() === tagId) {
+			const prev = this.collections[colIx]
+			const cleared: Collection = { ...prev, pinId: undefined }
+			if (use_mocks) {
+				this.collections = this.collections.map((c, j) => (j === colIx ? cleared : c))
+			} else if (db.isAvailable) {
+				await db.collections.patch(cid, { pinId: null })
+				this.collections = this.collections.map((c, j) => (j === colIx ? cleared : c))
+			}
+		}
 		if (!use_mocks) {
 			await db.tags.updateIndices(cid, updated)
 		}

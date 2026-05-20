@@ -465,7 +465,7 @@
 			width: 100%;
 			@include text-style(0.48, 400, 1.25rem);
 			margin: 0;
-			min-height: 1.35em;
+			line-height: 1.8rem;
 			outline: none;
 			cursor: text;
 

@@ -371,7 +371,7 @@
 		height: 100vh;
 		background: var(--sidebar-bg);
 		overflow-y: auto;
-		padding: 9px 16px 28px 16px;
+		padding: 9px 16px 120px 16px;
 
 		--margin-right: -6px;
 		--item-width: calc(100% - 5px);
@@ -519,6 +519,7 @@
 		&__label {
 			@include text-style(0.88, 400, 1.225rem);
 			min-width: 0;
+			@include elipses-overflow;
 		}
 		&__count {
 			@include text-style(0.38, 400, 1.15rem);

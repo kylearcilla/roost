@@ -3,7 +3,7 @@
 	import UploadIcon from '$lib/components/UploadIcon.svelte'
 	import { cursorPos } from '$lib/float/cursor.svelte'
 	import { extractUrl } from '$lib/lib/collection-sources'
-	import { COLOR_SWATCHES } from '$lib/lib/utils'
+	import { COLOR_SWATCHES, initFloatElemPos } from '$lib/lib/utils'
 
 	/** `imgUrl`: URL chrome + live favicon; `tag`: text field + `Color` swatch dropdown */
 	type FloatInputType = HTMLInputElement['type'] | 'imgUrl' | 'tag'
@@ -62,7 +62,19 @@
 
 	$effect.pre(() => {
 		if (positionOverride == null && wasHidden && !hidden) {
-			cursorOpenSnap = { top: cursorPos.top, left: cursorPos.left }
+			const base = { top: cursorPos.top, left: cursorPos.left }
+			const fixedToViewport = (positionMode ?? 'fixed') === 'fixed'
+			if (fixedToViewport && typeof window !== 'undefined') {
+				const floatW =
+					inputType === 'imgUrl' || inputType === 'url' || inputType === 'tag' ? 300 : 280
+				cursorOpenSnap = initFloatElemPos({
+					dims: { width: floatW, height: 56 },
+					cursorPos: base,
+					margins: { ns: 8, ew: 8 }
+				})
+			} else {
+				cursorOpenSnap = base
+			}
 		}
 		wasHidden = hidden
 	})
@@ -75,8 +87,15 @@
 
 	const inputDomId = $derived(`float-input-${dmenuId.replace(/[^a-zA-Z0-9_-]/g, '-')}`)
 
+	/** Never `type="url"` — browsers block spaces / odd chars while editing; `extractUrl` still validates. */
 	const domInputType = $derived<HTMLInputElement['type']>(
-		inputType === 'imgUrl' ? 'url' : inputType === 'tag' ? 'text' : inputType
+		inputType === 'imgUrl' || inputType === 'url' ? 'text' : inputType === 'tag' ? 'text' : inputType
+	)
+	const fieldInputmode = $derived<'url' | undefined>(
+		inputType === 'url' || inputType === 'imgUrl' ? 'url' : undefined
+	)
+	const fieldAutocomplete = $derived<'url' | undefined>(
+		inputType === 'url' || inputType === 'imgUrl' ? 'url' : undefined
 	)
 	const showUrlChrome = $derived(inputType === 'url' || inputType === 'imgUrl')
 	const showTagChrome = $derived(inputType === 'tag')
@@ -229,10 +248,14 @@
 			id={inputDomId}
 			class="link-menu__field"
 			type={domInputType}
+			inputmode={fieldInputmode}
+			autocomplete={fieldAutocomplete}
 			{placeholder}
 			bind:value={value}
 			disabled={isDisabled}
+			spellcheck={showUrlChrome ? false : undefined}
 			onkeydown={(e) => {
+				if (e.key === ' ' || e.key === 'Enter') e.stopPropagation()
 				if (e.key !== 'Enter') return
 				if (inputType !== 'tag' && inputType !== 'text') return
 				if (submitDisabled) return
@@ -388,7 +411,9 @@
 			border: none;
 			outline: none;
 			background: transparent;
-			@include text-style(1, 400, 1.3rem);
+			padding: 3px 5px;
+			line-height: 1.45;
+			@include text-style(1, 400, 1.35rem);
 		}
 		&__field::placeholder {
 			opacity: 0.42;

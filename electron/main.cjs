@@ -642,7 +642,76 @@ function registerInvokeHandlers() {
 		}
 	})
 
+	ipcMain.handle('roost-open-link-popup', (event, rawUrl) => {
+		try {
+			const url = typeof rawUrl === 'string' ? rawUrl.trim() : ''
+			if (!isHttpOrHttpsUrl(url)) return { ok: false, error: 'invalid url' }
+			const parent = BrowserWindow.fromWebContents(event.sender)
+			const popup = new BrowserWindow({
+				...(parent ? { parent } : {}),
+				width: 960,
+				height: 720,
+				minWidth: 420,
+				minHeight: 320,
+				show: false,
+				title: 'Roost',
+				webPreferences: {
+					sandbox: true,
+					contextIsolation: true,
+					nodeIntegration: false
+				}
+			})
+			attachExternalWindowOpens(popup)
+			popup.once('ready-to-show', () => popup.show())
+			void popup.loadURL(url)
+			return { ok: true }
+		} catch (e) {
+			const message = e instanceof Error ? e.message : String(e)
+			return { ok: false, error: message }
+		}
+	})
+
 	invokeHandlersRegistered = true
+}
+
+/** Open normal web links in the system browser instead of an in-app window or same webview. */
+function isHttpOrHttpsUrl(url) {
+	try {
+		const p = new URL(url).protocol
+		return p === 'http:' || p === 'https:'
+	} catch {
+		return false
+	}
+}
+
+/** New windows / tabs → system browser (used on main shell and link-preview windows). */
+function attachExternalWindowOpens(win) {
+	win.webContents.setWindowOpenHandler((details) => {
+		if (isHttpOrHttpsUrl(details.url)) void shell.openExternal(details.url)
+		return { action: 'deny' }
+	})
+}
+
+function attachExternalLinkRouting(win) {
+	attachExternalWindowOpens(win)
+	win.webContents.on('will-navigate', (event, navigationUrl) => {
+		if (!isHttpOrHttpsUrl(navigationUrl)) return
+		let cur
+		try {
+			cur = new URL(win.webContents.getURL())
+		} catch {
+			cur = null
+		}
+		let next
+		try {
+			next = new URL(navigationUrl)
+		} catch {
+			return
+		}
+		if (cur && next.origin === cur.origin) return
+		event.preventDefault()
+		void shell.openExternal(navigationUrl)
+	})
 }
 
 function createWindow() {
@@ -679,6 +748,8 @@ function createWindow() {
 			sandbox: true
 		}
 	})
+
+	attachExternalLinkRouting(win)
 
 	win.once('ready-to-show', () => win.show())
 

@@ -70,6 +70,17 @@ export function mediaDisplaySrc(m: { url?: string; path?: string } | null | unde
 	return ''
 }
 
+/** True when media is served from disk / `roost-media` / `file:` — not a remote `https` asset. */
+export function isLocalManagedMedia(m: { url?: string; path?: string } | null | undefined): boolean {
+	if (!m) return false
+	if ((m.path ?? '').trim()) return true
+	const u = (m.url ?? '').trim()
+	if (!u) return false
+	if (/^file:\/\//i.test(u)) return true
+	if (/^roost-media:/i.test(u)) return true
+	return false
+}
+
 /** Avatar / arbitrary stored string: http(s), blob, data, or absolute path. */
 export function storedImageSrc(stored: string | undefined): string {
 	if (!stored?.trim()) return ''

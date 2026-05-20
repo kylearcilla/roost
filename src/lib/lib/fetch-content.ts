@@ -188,6 +188,89 @@ function detectProvider(url: URL): ContentProvider {
 	return 'unknown'
 }
 
+export type SocialEmbedProvider = 'youtube' | 'tiktok' | 'instagram'
+
+function tryParseHttpUrlLoose(raw: string): URL | null {
+	const t = raw.trim()
+	if (!t) return null
+	try {
+		const u = new URL(/^https?:/i.test(t) ? t : `https://${t}`)
+		if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+		return u
+	} catch {
+		return null
+	}
+}
+
+function youtubeVideoIdFromUrl(u: URL): string | null {
+	const h = u.hostname.replace(/^www\./, '').toLowerCase()
+	if (h === 'youtu.be') {
+		const id = u.pathname.replace(/^\//, '').split(/[/?#]/)[0]
+		return id && /^[\w-]{6,}$/.test(id) ? id : null
+	}
+	if (h === 'youtube.com' || h === 'm.youtube.com' || h === 'music.youtube.com' || h.endsWith('.youtube.com')) {
+		const v = u.searchParams.get('v')
+		if (v && /^[\w-]{6,}$/.test(v)) return v
+		const shorts = u.pathname.match(/\/shorts\/([\w-]+)/i)
+		if (shorts?.[1]) return shorts[1]
+		const embed = u.pathname.match(/\/embed\/([\w-]+)/i)
+		if (embed?.[1]) return embed[1]
+		const live = u.pathname.match(/\/live\/([\w-]+)/i)
+		if (live?.[1]) return live[1]
+	}
+	return null
+}
+
+function tiktokNumericVideoIdFromUrl(u: URL): string | null {
+	const h = u.hostname.replace(/^www\./, '').toLowerCase()
+	if (h !== 'tiktok.com' && !h.endsWith('.tiktok.com')) return null
+	const m = u.pathname.match(/\/video\/(\d+)/)
+	return m?.[1] ?? null
+}
+
+function instagramEmbedSrcFromUrl(u: URL): string | null {
+	const h = u.hostname.replace(/^www\./, '').toLowerCase()
+	if (h !== 'instagram.com' && !h.endsWith('.instagram.com')) return null
+	const m = u.pathname.match(/^\/(p|reel|reels|tv)\/([^/?#]+)/i)
+	if (!m?.[1] || !m[2]) return null
+	const kind = m[1].toLowerCase() === 'reels' ? 'reel' : m[1].toLowerCase()
+	if (kind !== 'reel' && kind !== 'p' && kind !== 'tv') return null
+	const id = m[2]
+	return `https://www.instagram.com/${kind}/${encodeURIComponent(id)}/embed/`
+}
+
+/**
+ * YouTube / TikTok / Instagram page URLs → iframe `src` for in-app playback (official embed endpoints).
+ */
+export function socialEmbedIframeFromPageUrl(raw: string): {
+	provider: SocialEmbedProvider
+	src: string
+} | null {
+	const u = tryParseHttpUrlLoose(raw)
+	if (!u) return null
+
+	const yid = youtubeVideoIdFromUrl(u)
+	if (yid) {
+		return {
+			provider: 'youtube',
+			src: `https://www.youtube.com/embed/${encodeURIComponent(yid)}?rel=0&modestbranding=1`
+		}
+	}
+
+	const tid = tiktokNumericVideoIdFromUrl(u)
+	if (tid) {
+		return {
+			provider: 'tiktok',
+			src: `https://www.tiktok.com/embed/v2/${encodeURIComponent(tid)}`
+		}
+	}
+
+	const ig = instagramEmbedSrcFromUrl(u)
+	if (ig) return { provider: 'instagram', src: ig }
+
+	return null
+}
+
 function buildRedditJsonUrl(u: URL): string | null {
 	const host = u.hostname.toLowerCase()
 	if (host === 'redd.it') {
@@ -396,8 +479,19 @@ async function fetchText(
 			},
 			redirect: 'follow'
 		})
-		if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`)
-		return await res.text()
+		const text = await res.text()
+		if (!res.ok) {
+			const st = res.status
+			const head = text.slice(0, 800).trimStart()
+			const looksLikeHtmlDoc =
+				head.startsWith('<!') ||
+				head.toLowerCase().startsWith('<html') ||
+				/^<\s*html[\s>]/i.test(head)
+			/** Next.js (and similar) may answer document GETs with 3xx + full HTML shell; `fetch` then never “settles” on 200. */
+			if (st >= 300 && st < 400 && text.length > 200 && looksLikeHtmlDoc) return text
+			throw new Error(`HTTP ${st} for ${url}`)
+		}
+		return text
 	} finally {
 		clearTimeout(t)
 	}
@@ -448,6 +542,11 @@ function oEmbedTemplates(pageUrl: string, provider: ContentProvider): string[] {
 	}
 	/** Instagram’s public oembed often fails; still try common patterns */
 	if (provider === 'instagram') list.push(`https://api.instagram.com/oembed?url=${e}`)
+	/** X/Twitter: tweet text lives in oEmbed `html`, not always in `og:description`. */
+	if (provider === 'x') {
+		list.push(`https://publish.twitter.com/oembed?omit_script=1&url=${e}`)
+		list.push(`https://publish.twitter.com/oembed?url=${e}`)
+	}
 	return list
 }
 
@@ -476,7 +575,8 @@ function parseOpenGraph(html: string, pageUrl: URL): Partial<FetchedContentMetad
 	const getn = (k: string) => extractMeta(html, k, 'name')
 	const out: Partial<FetchedContentMetadata> = {}
 	out.title = get('og:title') ?? getn('title')
-	out.description = get('og:description') ?? getn('description')
+	out.description =
+		get('og:description') ?? getn('twitter:description') ?? getn('description')
 	out.subtitle = out.description
 	out.imageUrl =
 		get('og:image:secure_url') ?? get('og:image:url') ?? get('og:image') ?? getn('twitter:image') ?? getn('twitter:image:src')
@@ -625,10 +725,200 @@ export async function fetchContentMetadata(
 	return mergePreferFilled(result)
 }
 
+/** `https://x.com/user/status/123` or `twitter.com/.../status/123` */
+export function isTwitterStatusUrl(href: string): boolean {
+	try {
+		const u = new URL(href.trim())
+		const h = u.hostname.replace(/^www\./, '').toLowerCase()
+		if (h !== 'x.com' && h !== 'twitter.com') return false
+		return /\/status\/\d+/i.test(u.pathname)
+	} catch {
+		return /(?:^|\/\/)(?:www\.)?(?:x\.com|twitter\.com)\/[^/]+\/status\/\d+/i.test(href)
+	}
+}
+
+/** Screen name from `/handle/status/id` when author metadata is missing. */
+export function twitterUserFromStatusUrl(href: string): string | undefined {
+	try {
+		const u = new URL(href.trim())
+		const h = u.hostname.replace(/^www\./, '').toLowerCase()
+		if (h !== 'x.com' && h !== 'twitter.com') return undefined
+		const parts = u.pathname.split('/').filter(Boolean)
+		const i = parts.indexOf('status')
+		if (i < 1) return undefined
+		const user = parts[i - 1]
+		if (!user || !/^[\w]{1,30}$/i.test(user)) return undefined
+		return user.replace(/^@+/, '').toLowerCase()
+	} catch {
+		return undefined
+	}
+}
+
+function twitterScreenFromAuthorUrl(authorUrl: string | undefined): string | undefined {
+	const raw = authorUrl?.trim()
+	if (!raw) return undefined
+	let u: URL
+	try {
+		u = new URL(raw)
+	} catch {
+		return undefined
+	}
+	const h = u.hostname.replace(/^www\./, '').toLowerCase()
+	if (h !== 'x.com' && h !== 'twitter.com') return undefined
+	const seg = u.pathname.split('/').filter(Boolean)[0]
+	if (
+		!seg ||
+		/^(home|intent|share|i|search|messages|settings|notifications|compose)$/i.test(seg)
+	)
+		return undefined
+	return seg.replace(/^@+/, '').toLowerCase()
+}
+
+/** Strip X embed noise: media URLs, trailing “— Name (@handle) Date”, lone dates. */
+function sanitizeTwitterTweetPlain(raw: string): string {
+	let s = raw
+		.replace(/&mdash;/gi, '—')
+		.replace(/&ndash;/gi, '–')
+		.replace(/&lt;/gi, '<')
+		.replace(/&gt;/gi, '>')
+		.replace(/&amp;/g, '&')
+		.trim()
+
+	s = s.replace(/\s*pic\.twitter\.com\/[A-Za-z0-9_]+\s*/gi, ' ')
+	s = s.replace(/\s*video\.twitter\.com\/[A-Za-z0-9_]+\s*/gi, ' ')
+	s = s.replace(/\s*https?:\/\/pbs\.twimg\.com\/\S+\s*/gi, ' ')
+
+	s = s.replace(
+		/\s+[—–]\s+[\s\S]*?\(@[\w_]{1,32}\)\s*(?:,?\s*(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+\d{4})?\s*$/i,
+		''
+	)
+	s = s.replace(
+		/\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+\d{4}\s*$/i,
+		''
+	)
+
+	return s.replace(/ +/g, ' ').trim()
+}
+
+/** Plain tweet text from X publish embed HTML (`<blockquote class="twitter-tweet">…`). */
+function tweetPlainFromXEmbedHtml(html: string): string | undefined {
+	const raw = html.trim()
+	if (!raw) return undefined
+	const inner =
+		raw.match(/<blockquote[^>]*class="[^"]*twitter-tweet[^"]*"[^>]*>([\s\S]*?)<\/blockquote>/i)?.[1] ??
+		raw.match(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/i)?.[1] ??
+		raw
+	let s = inner
+		.replace(/<a\s[^>]*>([\s\S]*?)<\/a>/gi, '$1')
+		.replace(/<br\s*\/?>/gi, '\n')
+		.replace(/<\/p>\s*/gi, '\n')
+		.replace(/<p[^>]*>/gi, '')
+		.replace(/<[^>]+>/g, ' ')
+	s = decodeHtmlEntities(s)
+	s = s
+		.replace(/[\t\f\v]+/g, ' ')
+		.replace(/\s+\n/g, '\n')
+		.replace(/\n\s+/g, '\n')
+		.replace(/\n{3,}/g, '\n\n')
+		.replace(/ +/g, ' ')
+		.trim()
+	const cleaned = sanitizeTwitterTweetPlain(s)
+	if (cleaned.length < 2) return undefined
+	return cleaned
+}
+
+function oembedHtmlString(m: FetchedContentMetadata): string | undefined {
+	const h = m.embedHtml?.trim()
+	if (h) return h
+	const o = m.oembed
+	if (o && typeof o === 'object' && typeof (o as Record<string, unknown>).html === 'string') {
+		return String((o as Record<string, unknown>).html).trim()
+	}
+	return undefined
+}
+
+/** Tweet body for card `snippet`: OG/twitter meta, `og:title` quote patterns, oEmbed HTML. */
+export function extractTweetBodyForMetadata(m: FetchedContentMetadata): string | undefined {
+	const candidates: string[] = []
+	const d = m.description?.trim()
+	if (d) candidates.push(d)
+	const t = m.title?.trim()
+	if (t) {
+		const patterns: RegExp[] = [
+			/\s+on\s+X:\s*["\u201c\u2018]([\s\S]+)["\u201d\u2019]\s*$/i,
+			/\s+on\s+Twitter:\s*["\u201c\u2018]([\s\S]+)["\u201d\u2019]\s*$/i,
+			/on\s+X:\s*["\u201c\u2018]([\s\S]+)["\u201d\u2019]\s*$/i,
+			/on\s+Twitter:\s*["\u201c\u2018]([\s\S]+)["\u201d\u2019]\s*$/i
+		]
+		for (const re of patterns) {
+			const mm = t.match(re)
+			const inner = mm?.[1]?.trim()
+			if (inner) {
+				candidates.push(inner)
+				break
+			}
+		}
+	}
+	const embed = oembedHtmlString(m)
+	const fromEmbed = embed ? tweetPlainFromXEmbedHtml(embed) : undefined
+	if (fromEmbed) candidates.push(fromEmbed)
+	if (!candidates.length) return undefined
+	const best = candidates.reduce((a, b) => (b.length > a.length ? b : a))
+	const cleaned = sanitizeTwitterTweetPlain(best)
+	return cleaned.length >= 2 ? cleaned : undefined
+}
+
+/**
+ * X/Twitter **status** posts: card snippet = tweet text; `author` = screen name (for `@handle` source label).
+ */
+function applyTwitterCardLayout(m: FetchedContentMetadata): void {
+	if (m.provider !== 'x') return
+	const href = (m.canonicalUrl ?? m.sourceUrl).trim()
+	if (!isTwitterStatusUrl(href)) return
+
+	const tweet = extractTweetBodyForMetadata(m)
+	if (tweet) {
+		m.description = tweet
+		m.subtitle = tweet
+	}
+	let screen =
+		twitterScreenFromAuthorUrl(m.authorUrl) ?? m.author?.replace(/^@+/, '').trim().toLowerCase()
+	if (!screen || /\s/.test(screen)) screen = twitterUserFromStatusUrl(href) ?? ''
+	if (screen) m.author = screen
+
+	/** Card `title` must not hold the tweet — only `description` / `subtitle` (→ library `snippet`). */
+	m.title = undefined
+}
+
+/**
+ * Pinterest pins: pin copy lives in `snippet` (description + former title); no card title or dates.
+ */
+function applyPinterestCardLayout(m: FetchedContentMetadata): void {
+	if (m.provider !== 'pinterest') return
+	const desc = m.description?.trim() ?? ''
+	const tit = m.title?.trim() ?? ''
+	let body = ''
+	if (desc && tit && desc !== tit) {
+		body = desc.length >= tit.length ? `${desc}\n${tit}` : `${tit}\n${desc}`
+	} else {
+		body = desc || tit
+	}
+	if (body) {
+		m.description = body
+		m.subtitle = body
+	}
+	m.title = undefined
+	m.publishedAt = undefined
+	m.modifiedAt = undefined
+}
+
 function mergePreferFilled(m: FetchedContentMetadata): FetchedContentMetadata {
 	if (m.subtitle === undefined && m.description) m.subtitle = m.description
 	const ot = m.oembed && typeof m.oembed.title === 'string' ? (m.oembed.title as string) : ''
 	if ((!m.title || m.title.trim().length < 2) && ot) m.title = ot
+	/** After oEmbed title backfill: provider-specific card fields. */
+	if (m.provider === 'x') applyTwitterCardLayout(m)
+	else if (m.provider === 'pinterest') applyPinterestCardLayout(m)
 	assignThumbnailDims(m)
 	return m
 }

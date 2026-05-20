@@ -202,6 +202,7 @@
 				class:drop-left-border--over={itemTargetId === item.id && itemSrcId !== item.id}
 				role="listitem"
 				data-id={item.id}
+				data-idx={item.idx}
 			>
 				{#if reorderable}
 					<div
@@ -218,7 +219,7 @@
 					></div>
 				{/if}
 				<div class="lib-masonry__card">
-					<ContentCard {item} />
+					<ContentCard {item} columnWidth={columnW} />
 				</div>
 			</div>
 		{/each}
@@ -240,7 +241,6 @@
 			padding: 48px 24px;
 			box-sizing: border-box;
 		}
-
 		&__empty-stack {
 			position: absolute;
 			left: 50%;
@@ -253,7 +253,6 @@
 			text-align: center;
 			pointer-events: none;
 		}
-
 		&__empty-icon {
 			font-family:
 				ui-monospace,
@@ -289,13 +288,12 @@
 			min-width: 0;
 			position: relative;
 		}
-
 		&__handle {
 			position: absolute;
 			top: 0;
 			left: 0;
 			width: 100%;
-			height: 28px;
+			height: 10px;
 			z-index: 5;
 			background: transparent;
 			cursor: grab;
@@ -305,7 +303,6 @@
 				cursor: grabbing;
 			}
 		}
-
 		&__card {
 			min-width: 0;
 		}

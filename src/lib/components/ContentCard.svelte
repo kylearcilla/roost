@@ -4,22 +4,37 @@
 	import Modal from '$lib/components/Modal.svelte'
 	import SourceLink from '$lib/components/SourceLink.svelte'
 	import { hashTagLabel } from '$lib/lib/tagLabels'
-	import { COLOR_SWATCHES, formatCardDate } from '$lib/lib/utils'
+	import {
+		COL_SIZES,
+		COLOR_SWATCHES,
+		formatCardDate,
+		sanitizeSnippetHtml,
+		snippetPlainText,
+		snippetStorageToEditableHtml
+	} from '$lib/lib/utils'
 	import { extractUrl } from '$lib/lib/collection-sources'
-	import { DEFAULT_IMG_UPLOAD_CONSTRAINTS, validateImgURL } from '$lib/lib/fetch-content'
+	import {
+		DEFAULT_IMG_UPLOAD_CONSTRAINTS,
+		socialEmbedIframeFromPageUrl,
+		validateImgURL
+	} from '$lib/lib/fetch-content'
 	import { global } from '$lib/lib/global.svelte'
 	import {
+		isLocalManagedMedia,
 		mediaDisplaySrc,
 		persistVolatileImageHref,
 		saveImportedUserFile,
 		type ImportedMediaStoreScope
 	} from '$lib/lib/importedMedia'
 	import { patchLibraryItem } from '$lib/libraryContent.svelte'
-	import { libraryTags, patchLibraryTag } from '$lib/libraryTags.svelte'
+	import { libraryTags } from '$lib/libraryTags.svelte'
 	import { openTagAssignPicker } from '$lib/mocks/tags'
 	import { tick } from 'svelte'
 	
-	let { item }: { item: ContentItem } = $props()
+	let { item, columnWidth }: { item: ContentItem; columnWidth?: number } = $props()
+
+	/** Masonry column width; hide date when grid is small (below medium step). */
+	const showCardDate = $derived((columnWidth ?? COL_SIZES.large) >= COL_SIZES.medium)
 
 	const cardMediaStore = $derived.by((): ImportedMediaStoreScope => {
 		const cid = item.collectionIds[0]?.trim() ?? ''
@@ -40,6 +55,7 @@
 	const tagAssignMenuId = $derived(`tag-assign-${item.id}`)
 	const tagReplaceMenuId = $derived(`tag-replace-${item.id}`)
 	const tagEditFloatDmenuId = $derived(`content-card-tag-float-${item.id}`)
+	const sourceFloatDmenuId = $derived(`content-card-source-float-${item.id}`)
 
 	const DIM_ORDER: ImageDimsType[] = ['auto', 'default', '3x2', 'portrait', 'square', 'video']
 	const VIDEO_HOVER_PLAY_MS = 200
@@ -85,6 +101,10 @@
 	let tagEditInputEl = $state<HTMLInputElement | null>(null)
 	let tagEditTargetId = $state<string | null>(null)
 
+	let sourceFloatHidden = $state(true)
+	let sourceLinkDraft = $state('')
+	let sourceSubmitShowArrow = $state(false)
+	let sourceSubmitJitter = $state(false)
 
 	const dateLine = $derived(formatCardDate(item.createdAt ?? ''))
 
@@ -106,8 +126,11 @@
 	type CardTagChip = { id: string; name: string }
 
 	const cardTagChips = $derived.by((): CardTagChip[] => {
+		const hideTagId =
+			global.onHomePage || global.currFilterTab === 'all' ? null : global.currFilterTab
 		const out: CardTagChip[] = []
 		for (const id of item.tags) {
+			if (hideTagId && id === hideTagId) continue
 			out.push({ id, name: tagLabel(id) })
 		}
 		return out
@@ -118,7 +141,7 @@
 
 
 	const hasDescription = $derived(
-		Boolean((item.snippet ?? '').trim() || (item.quoteText ?? '').trim())
+		Boolean(snippetPlainText(item.snippet) || snippetPlainText(item.quoteText))
 	)
 	const hasTitle = $derived(Boolean((item.title ?? '').trim()))
 	const hasImage = $derived(
@@ -157,14 +180,34 @@
 		return mediaDisplaySrc(m)
 	})
 
-	const mediaModalIsVideo = $derived(item.media?.type === 'video')
+	/** YouTube / TikTok / Instagram page → official embed iframe (not raw `<video src>`). */
+	const mediaModalEmbed = $derived.by(() => {
+		const page = item.url?.trim()
+		if (page) {
+			const em = socialEmbedIframeFromPageUrl(page)
+			if (em) return em
+		}
+		const m = item.media
+		if (m?.type === 'video' && !isLocalManagedMedia(m)) {
+			const vu = (m.url ?? '').trim()
+			if (vu && /^https?:\/\//i.test(vu)) {
+				const em = socialEmbedIframeFromPageUrl(vu)
+				if (em) return em
+			}
+		}
+		return null
+	})
+
+	const mediaModalShowNativeVideo = $derived(
+		Boolean(item.media?.type === 'video' && !mediaModalEmbed)
+	)
 
 	let mediaModalOpen = $state(false)
 	let mediaModalVideoEl = $state<HTMLVideoElement | null>(null)
 
 
 	$effect(() => {
-		if (!mediaModalOpen || !mediaModalIsVideo || !mediaModalVideoEl) return
+		if (!mediaModalOpen || !mediaModalShowNativeVideo || !mediaModalVideoEl) return
 		const v = mediaModalVideoEl
 		void tick().then(() => {
 			if (!mediaModalOpen || mediaModalVideoEl !== v) return
@@ -180,7 +223,10 @@
 		item.id
 		item.kind
 		if (titleEl && document.activeElement !== titleEl) titleEl.textContent = title
-		if (snippetEl && document.activeElement !== snippetEl) snippetEl.textContent = sub
+		if (snippetEl && document.activeElement !== snippetEl) {
+			const next = snippetStorageToEditableHtml(sub)
+			if (snippetEl.innerHTML !== next) snippetEl.innerHTML = next
+		}
 	})
 	$effect(() => {
 		if (imgFloatHidden) return
@@ -195,7 +241,7 @@
 	function onMediaDblClick(e: MouseEvent) {
 		e.preventDefault()
 		e.stopPropagation()
-		if (!mediaModalSrc) return
+		if (!mediaModalSrc && !mediaModalEmbed) return
 		mediaModalOpen = true
 	}
 
@@ -348,11 +394,61 @@
 		imgSubmitShowArrow = false
 		imgFloatHidden = false
 	}
+	function closeSourceFloat() {
+		sourceFloatHidden = true
+		sourceLinkDraft = ''
+		sourceSubmitShowArrow = false
+	}
+	function openSourceFloat() {
+		sourceLinkDraft = ''
+		sourceSubmitShowArrow = false
+		sourceFloatHidden = false
+	}
+	function triggerSourceSubmitJitter() {
+		sourceSubmitJitter = true
+		window.setTimeout(() => (sourceSubmitJitter = false), 320)
+	}
+	function submitSourceFloat() {
+		const raw = sourceLinkDraft.trim()
+		if (!raw) return
+		const extracted = extractUrl(sourceLinkDraft)
+		if (!extracted) {
+			if (raw) triggerSourceSubmitJitter()
+			sourceSubmitShowArrow = false
+			return
+		}
+		if (!sourceSubmitShowArrow) {
+			sourceSubmitShowArrow = true
+			return
+		}
+		const again = extractUrl(sourceLinkDraft)
+		if (!again) {
+			triggerSourceSubmitJitter()
+			sourceSubmitShowArrow = false
+			return
+		}
+		const href = again.href
+		const s = item.source
+		if (!s) {
+			patchLibraryItem(item.id, {
+				source: { id: 'web', name: 'Web', icon: '🔗', url: href }
+			})
+		} else {
+			const { customName: _c, ...noCustom } = s
+			patchLibraryItem(item.id, { source: { ...noCustom, url: href } })
+		}
+		closeSourceFloat()
+	}
 	function onCardWindowKeydown(e: KeyboardEvent) {
 		if (e.key !== 'Escape') return
 		if (!tagEditFloatHidden) {
 			e.preventDefault()
 			closeTagEditFloat()
+			return
+		}
+		if (!sourceFloatHidden) {
+			e.preventDefault()
+			closeSourceFloat()
 			return
 		}
 		if (!imgFloatHidden) {
@@ -485,8 +581,9 @@
 				return
 			}
 		}
-		patchLibraryTag(oldId, { name: next, color: { ...tagEditColor } })
-		global.syncTagsFromLibrary()
+		void global.patchTag(oldId, { name: next, color: { ...tagEditColor } }).catch((err) =>
+			console.error(err)
+		)
 		closeTagEditFloat()
 	}
 
@@ -717,16 +814,8 @@
 	}
 
 	function ctxAddSource() {
-		const placeholderUrl = 'https://example.com'
-		const s = item.source
-		if (!s) {
-			patchLibraryItem(item.id, {
-				source: { id: 'web', name: 'Web', icon: '🔗', url: placeholderUrl }
-			})
-			return
-		}
-		if (s.url?.trim()) return
-		patchLibraryItem(item.id, { source: { ...s, url: placeholderUrl } })
+		if (item.source?.url?.trim()) return
+		openSourceFloat()
 	}
 
 	function ctxDelete() {
@@ -752,31 +841,33 @@
 
 	function commitSubtitle() {
 		if (!snippetEl) return
-		const t = snippetEl.innerText.replace(/\s+/g, ' ').trim()
+		const html = sanitizeSnippetHtml(snippetEl.innerHTML)
+		const plain = snippetPlainText(html)
 		if (item.kind === 'quote') {
-			const cur = (item.quoteText ?? item.snippet ?? '').trim()
-			if (t === cur) {
-				if (!t) descriptionSlotOpen = false
+			const curRaw = item.quoteText ?? item.snippet ?? ''
+			const curNorm = sanitizeSnippetHtml(curRaw)
+			if (html === curNorm) {
+				if (!plain) descriptionSlotOpen = false
 				return
 			}
-			if (!t) {
+			if (!plain) {
 				patchLibraryItem(item.id, { quoteText: undefined, snippet: undefined })
 				descriptionSlotOpen = false
 				return
 			}
-			patchLibraryItem(item.id, { quoteText: t })
+			patchLibraryItem(item.id, { quoteText: html })
 		} else {
-			const cur = (item.snippet ?? '').trim()
-			if (t === cur) {
-				if (!t) descriptionSlotOpen = false
+			const curNorm = sanitizeSnippetHtml(item.snippet ?? '')
+			if (html === curNorm) {
+				if (!plain) descriptionSlotOpen = false
 				return
 			}
-			if (!t) {
+			if (!plain) {
 				patchLibraryItem(item.id, { snippet: undefined })
 				descriptionSlotOpen = false
 				return
 			}
-			patchLibraryItem(item.id, { snippet: t })
+			patchLibraryItem(item.id, { snippet: html })
 		}
 	}
 
@@ -822,6 +913,18 @@
 	inputType="tag"
 	onClose={closeTagEditFloat}
 	onPress={submitTagEditFromCard}
+/>
+
+<FloatInput
+	dmenuId={sourceFloatDmenuId}
+	bind:hidden={sourceFloatHidden}
+	bind:value={sourceLinkDraft}
+	inputType="url"
+	placeholder="type or paste link here..."
+	onClose={closeSourceFloat}
+	onPress={submitSourceFloat}
+	submitReady={Boolean(sourceSubmitShowArrow && extractUrl(sourceLinkDraft))}
+	submitJitter={sourceSubmitJitter}
 />
 
 <input
@@ -879,7 +982,7 @@
 			</div>
 		{/if}
 		<div class="content-card__body">
-			{#if sourceLine || dateLine}
+			{#if sourceLine || (dateLine && showCardDate)}
 				<div class="content-card__row">
 					{#if sourceLine && item.source}
 						<SourceLink
@@ -909,7 +1012,7 @@
 							}}
 						/>
 					{/if}
-					{#if dateLine}
+					{#if dateLine && showCardDate}
 						<span class="content-card__date">{dateLine}</span>
 					{/if}
 				</div>
@@ -922,6 +1025,7 @@
 					role="heading"
 					aria-level="3"
 					aria-label="Title"
+					spellcheck="false"
 					data-placeholder="Add title…"
 					onpointerdown={stopSurface}
 					onblur={commitTitle}
@@ -936,6 +1040,7 @@
 					role="textbox"
 					aria-multiline="true"
 					aria-label="Subtitle"
+					spellcheck="false"
 					data-placeholder="Add subtitle…"
 					onpointerdown={stopSurface}
 					onblur={commitSubtitle}
@@ -974,7 +1079,15 @@
 	>
 		{#snippet children()}
 			<div class="content-card__media-modal">
-				{#if mediaModalIsVideo}
+				{#if mediaModalEmbed}
+					<iframe
+						class={`content-card__media-modal-iframe content-card__media-modal-iframe--${mediaModalEmbed.provider}`}
+						src={mediaModalEmbed.src}
+						title="Embedded video"
+						allowfullscreen
+						allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+					></iframe>
+				{:else if mediaModalShowNativeVideo}
 					<!-- svelte-ignore a11y_media_has_caption -->
 					<video
 						bind:this={mediaModalVideoEl}
@@ -998,6 +1111,26 @@
 
 	.content-card__media-modal {
 		line-height: 0;
+	}
+
+	.content-card__media-modal-iframe {
+		border: 0;
+		display: block;
+		background: #0a0a0a;
+		max-height: min(85vh, calc(100vh - 120px));
+	}
+
+	.content-card__media-modal-iframe--youtube {
+		width: min(92vw, 960px);
+		aspect-ratio: 16 / 9;
+		height: auto;
+	}
+
+	.content-card__media-modal-iframe--tiktok,
+	.content-card__media-modal-iframe--instagram {
+		width: min(420px, 92vw);
+		aspect-ratio: 9 / 16;
+		height: auto;
 	}
 
 	.content-card__media-modal-el {
@@ -1139,7 +1272,6 @@
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			flex-wrap: wrap;
 			margin-bottom: 6px;
 		}
 		&__date {
@@ -1156,6 +1288,18 @@
 			@include text-style(0.52, 400, 1.25rem);
 			line-height: 1.45;
 			margin: 6px 0 5px 0;
+
+			:global(b),
+			:global(strong) {
+				font-weight: 600;
+			}
+			:global(i),
+			:global(em) {
+				font-style: italic;
+			}
+			:global(u) {
+				text-decoration: underline;
+			}
 		}
 
 		&__editable {
@@ -1185,7 +1329,6 @@
 		&__foot {
 			display: block;
 			min-width: 0;
-			padding-top: 14px;
 		}
 		&__tags {
 			display: flex;

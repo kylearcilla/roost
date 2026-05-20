@@ -18,9 +18,13 @@ export const collection = sqliteTable(
 		/** FK to `media` for collection wallpaper; null = none. */
 		wallpaperId: text('wallpaper_id').references(() => media.id, { onDelete: 'set null' }),
 		/** Scroll / focal position for wallpaper (e.g. 0–1). */
-		wallpaperFocusY: real('wallpaper_focus_y')
+		wallpaperFocusY: real('wallpaper_focus_y'),
+		/** Default toolbar tag filter: `Tag.id` in this collection, or null for All. */
+		pinId: text('pin_id'),
+		/** Future: sidebar / layout groups. */
+		groupId: text('group_id')
 	},
-	(t) => [index('collection_idx_order').on(t.idx)]
+	(t) => [index('collection_idx_order').on(t.idx), index('collection_pin_anchor_idx').on(t.pinId)]
 )
 
 /**

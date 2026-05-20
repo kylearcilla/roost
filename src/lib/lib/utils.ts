@@ -1,19 +1,23 @@
 export const COL_SIZES = {
+  icon: 40,
   small: 140,
   medium: 185,
   large: 230,
-  xlarge: 275
+  xlarge: 275,
+  full: 370,
 }
 
 /** Slider / `GridColumnSize` step order (matches `COL_SIZES` keys). */
-export const GRID_COLUMN_SIZE_ORDER = ['small', 'medium', 'large', 'xlarge'] as const
+export const GRID_COLUMN_SIZE_ORDER = ['icon', 'small', 'medium', 'large', 'xlarge', 'full'] as const
 
 /** Masonry column widths per WidthSlider step (small → xlarge). */
 export const GRID_COLUMN_WIDTHS = [
+  COL_SIZES.icon,
   COL_SIZES.small,
   COL_SIZES.medium,
   COL_SIZES.large,
-  COL_SIZES.xlarge
+  COL_SIZES.xlarge,
+  COL_SIZES.full
 ] as const
 
 export function gridColumnSizeAtIndex(i: number): GridColumnSize {
@@ -387,4 +391,138 @@ export function shiftItems<T extends { idx: number }>({ array, fromIdx, toIdx, d
   }
 
   return array
+}
+
+const SNIPPET_ALLOWED_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'br', 'p', 'div', 'span'])
+
+/** Visible text for search / empty checks (works without DOM). */
+export function snippetPlainText(raw: string | undefined | null): string {
+	const s = raw ?? ''
+	if (!s) return ''
+	if (typeof document !== 'undefined') {
+		const tmp = document.createElement('div')
+		tmp.innerHTML = s
+		return (tmp.innerText || tmp.textContent || '').replace(/\s+/g, ' ').trim()
+	}
+	return s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function sanitizeSpanStyle(style: string | null): string | undefined {
+	if (!style?.trim()) return undefined
+	const parts = style.split(';').map((p) => p.trim()).filter(Boolean)
+	const out: string[] = []
+	for (const p of parts) {
+		const m = /^([\w-]+)\s*:\s*(.+)$/i.exec(p)
+		if (!m) continue
+		const k = m[1].toLowerCase().trim()
+		const v = m[2].trim()
+		if (k === 'font-weight' && /^(normal|bold|bolder|lighter|[1-9]00)$/i.test(v)) out.push(`${k}: ${v}`)
+		if (k === 'font-style' && /^(normal|italic|oblique)$/i.test(v)) out.push(`${k}: ${v}`)
+		if (k === 'text-decoration' && /^[\w\s-]{1,48}$/i.test(v)) out.push(`${k}: ${v}`)
+	}
+	return out.length ? out.join('; ') : undefined
+}
+
+/** Allowed inline-ish HTML for card snippet / quote body; drops scripts, handlers, unknown tags. */
+export function sanitizeSnippetHtml(html: string): string {
+	const raw = html.trim()
+	if (!raw) return ''
+	if (typeof document === 'undefined') {
+		return raw
+			.replace(/<script[\s\S]*?<\/script>/gi, '')
+			.replace(/\s*on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+	}
+
+	const wrap = document.createElement('div')
+	wrap.innerHTML = raw
+
+	function walk(el: Element) {
+		const kids = [...el.children]
+		for (const child of kids) {
+			const tag = child.tagName.toLowerCase()
+			if (!SNIPPET_ALLOWED_TAGS.has(tag)) {
+				while (child.firstChild) el.insertBefore(child.firstChild, child)
+				el.removeChild(child)
+				continue
+			}
+			if (tag === 'span') {
+				const st = sanitizeSpanStyle(child.getAttribute('style'))
+				for (const a of [...child.attributes]) child.removeAttribute(a.name)
+				if (st) child.setAttribute('style', st)
+			} else {
+				for (const a of [...child.attributes]) child.removeAttribute(a.name)
+			}
+			walk(child)
+		}
+	}
+	walk(wrap)
+	return wrap.innerHTML.replace(/^\s+|\s+$/g, '')
+}
+
+const RICH_SNIPPET_MARK = /<\s*(b|strong|i|em|u|br|p|div|span)\b/i
+
+/** DB / OG string → HTML for a `contenteditable` snippet field (plain text escaped, existing HTML sanitized). */
+export function snippetStorageToEditableHtml(raw: string): string {
+	const t = raw ?? ''
+	if (!t.trim()) return ''
+	if (RICH_SNIPPET_MARK.test(t) || /<\/(b|strong|i|em|u|p|div|span)>/i.test(t)) return sanitizeSnippetHtml(t)
+	return t
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/\r\n|\r|\n/g, '<br>')
+}
+
+function viewportBox(): BoxSize {
+	if (typeof window === 'undefined') return { width: 1200, height: 800 }
+	return { width: window.innerWidth, height: window.innerHeight }
+}
+
+/**
+ * Clamp a `position: fixed` float so it stays inside the **browser viewport** (window).
+ * `cursorPos` / `clientOffset` should be in the same coordinate space as `fixed` (typically document client / viewport).
+ *
+ * @param dims — Float width × height (approximate is fine).
+ * @param cursorPos — Anchor point (e.g. right-click or pointer).
+ * @param clientOffset — Grab point inside the float (drag); subtracted from cursor.
+ * @param margins — Inset from each viewport edge (ns = north/south, ew = east/west).
+ */
+export function initFloatElemPos(context: {
+	dims: BoxSize
+	cursorPos: OffsetPoint
+	clientOffset?: OffsetPoint
+	margins?: { ns: number; ew: number }
+}) {
+	const { dims, cursorPos, clientOffset, margins = { ns: 0, ew: 0 } } = context
+	const containerDims = viewportBox()
+
+	const { width: menuWidth, height: menuHeight } = dims
+	const { width: containerWidth, height: containerHeight } = containerDims
+
+	const clientOffsetLeft = clientOffset?.left ?? 0
+	const clientOffsetTop = clientOffset?.top ?? 0
+
+	let left = cursorPos.left - clientOffsetLeft
+	let top = cursorPos.top - clientOffsetTop
+
+	const marginOffset = {
+		left: margins.ew,
+		top: margins.ns,
+		bottom: margins.ns,
+		right: margins.ew
+	}
+	const containerEdges = {
+		top: marginOffset.top,
+		left: marginOffset.left,
+		right: containerWidth - marginOffset.right,
+		bottom: containerHeight - marginOffset.bottom
+	}
+
+	const maxLeft = containerEdges.right - menuWidth
+	const maxTop = containerEdges.bottom - menuHeight
+	left = Math.min(Math.max(left, containerEdges.left), Math.max(containerEdges.left, maxLeft))
+	top = Math.min(Math.max(top, containerEdges.top), Math.max(containerEdges.top, maxTop))
+
+	return { left, top }
 }

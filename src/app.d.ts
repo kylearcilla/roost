@@ -92,6 +92,8 @@ declare global {
 				| { ok: true; renames: Array<{ from: string; to: string }> }
 				| { ok: false; error: string }
 			>
+			/** Cmd/Ctrl+click source links: open `http(s)` in an in-app `BrowserWindow`. */
+			openLinkPopup?: (url: string) => Promise<{ ok: true } | { ok: false; error: string }>
 		}
 		roost?: {
 			isElectron: boolean

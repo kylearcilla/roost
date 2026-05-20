@@ -149,6 +149,19 @@
 		abs.close(ctxMenuId)
 	}
 
+	function onSourceLinkClick(e: MouseEvent) {
+		const href = source.url?.trim()
+		if (!href) return
+		if (!e.shiftKey && !e.ctrlKey) return
+		e.preventDefault()
+		e.stopPropagation()
+		const open = typeof window !== 'undefined' ? window.electronAPI?.openLinkPopup : undefined
+		if (typeof open !== 'function') return
+		void open(href).then((r) => {
+			if (r && 'ok' in r && !r.ok) console.error(r.error)
+		})
+	}
+
 </script>
 
 <svelte:window onkeydown={onWindowKeydown} />
@@ -160,8 +173,9 @@
 		target="_blank"
 		rel="noopener noreferrer"
 		title={source.name}
-		aria-label={`${label} (opens in new tab)`}
+		aria-label={`${label} (opens in new tab; ⌘- or Ctrl-click opens in Roost)`}
 		oncontextmenu={openSourceContextMenu}
+		onclick={onSourceLinkClick}
 	>
 		{#if showFavicon}
 			<img class="source-link__favicon" src={favicon} alt="" width="14" height="14" loading="lazy" />

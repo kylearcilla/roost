@@ -6,7 +6,7 @@
 	import WidthSlider from './WidthSlider.svelte'
 	import { global } from '$lib/lib/global.svelte'
 	import { addMediaItem, libraryContent, patchLibraryItem } from '$lib/libraryContent.svelte'
-	import { libraryTags, patchLibraryTag } from '$lib/libraryTags.svelte'
+	import { libraryTags } from '$lib/libraryTags.svelte'
 	import { mockSidebarNav } from '$lib/mocks'
 	import {
 		COL_SIZES,
@@ -14,7 +14,8 @@
 		GRID_COLUMN_WIDTHS,
 		getMaskedGradientStyle,
 		gridColumnSizeAtIndex,
-		indexForGridColumnSize
+		indexForGridColumnSize,
+		snippetPlainText
 	} from '$lib/lib/utils'
 	import UploadIcon from '$lib/components/UploadIcon.svelte'
 	import Header from './Header.svelte'
@@ -69,6 +70,9 @@
 	let tagDragTgtId = $state<string | null>(null)
 
 	let tagDescriptionEl = $state<HTMLDivElement | null>(null)
+	/** When true, show the description block even if plain text is empty (add-description / focus). */
+	let tagDescShellOpen = $state(false)
+	let tagDescFieldEmpty = $state(true)
 
 	let tagEditFloatHidden = $state(true)
 	let tagEditFloatPos = $state({ top: 0, left: 0 })
@@ -86,6 +90,11 @@
 	let currTags = $derived(global.currTags)
 	let isUploadLoading = $state(false)
 
+	const activeTagMeta = $derived.by(() => {
+		if (currentTab === 'all') return null
+		return currTags.find((t) => t.id === currentTab) ?? null
+	})
+
 	const shellCollection = $derived(global.currCollection ?? global.collections[0])
 
 	$effect(() => {
@@ -97,20 +106,68 @@
 		prevOnHome = h
 		prevCollectionId = cid
 	})
+	/** Drop invalid tab only when that tag is not in the *current* collection (avoid racing `setCollection` + `applySavedTagFilter`). */
 	$effect(() => {
 		if (currentTab === 'all') return
-		if (!currTags.some((t) => t.id === currentTab)) {
-			global.currFilterTab = 'all'
-		}
+		const cid = global.selectedCollectionId
+		if (!cid) return
+		void libraryTags.byId
+		const meta = libraryTags.byId[currentTab]
+		const ok = meta && meta.collectionId === cid
+		if (!ok) global.currFilterTab = 'all'
 	})
+	$effect(() => {
+		void currentTab
+		tagDescShellOpen = false
+	})
+
+	function tagDescriptionPlainText(html: string | undefined | null): string {
+		if (html == null || typeof html !== 'string') return ''
+		const s = html.trim()
+		if (!s) return ''
+		if (typeof document !== 'undefined') {
+			const d = document.createElement('div')
+			d.innerHTML = s
+			return (d.textContent ?? '').replace(/\s+/g, ' ').trim()
+		}
+		return s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+	}
+
 	$effect(() => {
 		const tag = activeTagMeta
 		const el = tagDescriptionEl
 		if (!tag || !el) return
 		if (document.activeElement === el) return
 		const desc = tag.description ?? ''
-		if (el.textContent !== desc) el.textContent = desc
+		if (el.innerHTML !== desc) el.innerHTML = desc
+		tagDescFieldEmpty = tagDescriptionPlainText(desc) === ''
 	})
+
+	async function commitTagDescription(el: HTMLDivElement) {
+		if (currentTab === 'all') return
+		const id = currentTab
+		const cur = libraryTags.byId[id]
+		if (!cur || cur.collectionId !== currentCid) return
+		const html = el.innerHTML.trim()
+		const plain = tagDescriptionPlainText(html)
+		const prevHtml = (cur.description ?? '').trim()
+		if (!plain) {
+			if (cur.description !== undefined) {
+				await global.patchTag(id, { description: undefined })
+			}
+			return
+		}
+		if (html === prevHtml) return
+		await global.patchTag(id, { description: html })
+	}
+
+	function onTagDescFocusOut(e: FocusEvent) {
+		const el = e.currentTarget as HTMLDivElement
+		const rt = e.relatedTarget as Node | null
+		if (rt && el.contains(rt)) return
+		void commitTagDescription(el).catch((err) => console.error(err))
+		tagDescShellOpen = false
+	}
 
 	function itemRecencyTs(item: ContentItem): number {
 		const raw = item.createdAt?.trim()
@@ -125,9 +182,9 @@
 			.filter(Boolean)
 		return [
 			i.title,
-			i.snippet,
+			snippetPlainText(i.snippet),
 			i.url,
-			i.quoteText,
+			snippetPlainText(i.quoteText),
 			i.author,
 			i.source?.name,
 			i.source?.shortName,
@@ -197,25 +254,9 @@
 			el.style.removeProperty('-webkit-mask-image')
 		}
 	})
-	const activeTagMeta = $derived.by(() => {
-		if (currentTab === 'all') return null
-		return currTags.find((t) => t.id === currentTab) ?? null
-	})
-
-	function commitTagDescription(raw: string) {
-		if (currentTab === 'all') return
-		const id = currentTab
-		const cur = libraryTags.byId[id]
-		if (!cur || cur.collectionId !== currentCid) return
-		const next = raw.replace(/\s+/g, ' ').trim()
-		const prev = (cur.description ?? '').trim()
-		if (next === prev) return
-		patchLibraryTag(id, { description: next ? next : undefined })
-		global.syncTagsFromLibrary()
-	}
 	function tabContextItems(tab: ToolbarTab): DropdownItem[] {
 		const meta = libraryTags.byId[tab.id]
-		const hasDescription = Boolean(meta?.description?.trim())
+		const hasDescription = Boolean(tagDescriptionPlainText(meta?.description))
 		const hasTitle = Boolean(meta?.name?.trim())
 
 		return [
@@ -272,6 +313,7 @@
 			)
 			if (existing) {
 				global.currFilterTab = existing.id
+				void global.persistCollectionFilterPin(existing.id)
 				closeTagEditFloat()
 				return
 			}
@@ -327,8 +369,9 @@
 				return
 			}
 		}
-		patchLibraryTag(oldId, { name: next, color: { ...tagEditColor } })
-		global.syncTagsFromLibrary()
+		void global.patchTag(oldId, { name: next, color: { ...tagEditColor } }).catch((err) =>
+			console.error(err)
+		)
 		closeTagEditFloat()
 	}
 	function onTagEditFloatKeydown(e: KeyboardEvent) {
@@ -349,7 +392,10 @@
 			patchLibraryItem(item.id, { tags: item.tags.filter((t: string) => t !== tagId) })
 		}
 		void global.deleteTagAndReindex(tagId)
-		if (currentTab === tagId) global.currFilterTab = 'all'
+		if (currentTab === tagId) {
+			global.currFilterTab = 'all'
+			void global.persistCollectionFilterPin(null)
+		}
 	}
 
 	function onTagTabDragStart(e: DragEvent, tabId: string) {
@@ -377,15 +423,18 @@
 		if (itemId === 'edit' || label === 'Edit') openEditTab(tab)
 		else if (itemId === 'delete' || label === 'Delete') deleteTab(tab)
 		else if (itemId === 'remove-description' || label === 'Remove Description') {
-			patchLibraryTag(tab.id, { description: undefined })
-			global.syncTagsFromLibrary()
+			void global.patchTag(tab.id, { description: undefined }).catch((err) => console.error(err))
 		} else if (itemId === 'add-description' || label === 'Add Description') {
 			global.currFilterTab = tab.id
-			patchLibraryTag(tab.id, { description: '' })
-			global.syncTagsFromLibrary()
-			void tick().then(() => {
-				tagDescriptionEl?.focus()
-			})
+			void global.persistCollectionFilterPin(tab.id)
+			void global
+				.patchTag(tab.id, { description: '' })
+				.then(() => {
+					tagDescShellOpen = true
+					return tick()
+				})
+				.then(() => tagDescriptionEl?.focus())
+				.catch((err) => console.error(err))
 		}
 	}
 	function dataTransferHasOnlyImageOrVideoFiles(dt: DataTransfer | null): boolean {
@@ -511,7 +560,10 @@
 							type="button"
 							class="home__content-btn"
 							class:home__content-btn--active={currentTab === 'all'}
-							onclick={() => (global.currFilterTab = 'all')}
+							onclick={() => {
+								global.currFilterTab = 'all'
+								void global.persistCollectionFilterPin(null)
+							}}
 						>
 							All
 						</button>
@@ -536,7 +588,10 @@
 								type="button"
 								class="home__content-btn"
 								class:home__content-btn--active={currentTab === t.id}
-								onclick={() => (global.currFilterTab = t.id)}
+								onclick={() => {
+									global.currFilterTab = t.id
+									void global.persistCollectionFilterPin(t.id)
+								}}
 							>
 								{t.label}
 							</button>
@@ -563,19 +618,30 @@
 		<div class="divider"></div>
 		{/if}
 
-		{#if !global.onHomePage && activeTagMeta && activeTagMeta.description !== undefined}
+		{#if
+			!global.onHomePage &&
+			activeTagMeta &&
+			activeTagMeta.description !== undefined &&
+			(tagDescriptionPlainText(activeTagMeta.description) !== '' || tagDescShellOpen)}
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
 				bind:this={tagDescriptionEl}
 				class="home__tag-desc"
+				class:is-empty={tagDescFieldEmpty}
 				contenteditable="true"
 				role="textbox"
 				spellcheck="false"
 				aria-multiline="true"
 				aria-label="Tag description"
 				data-placeholder="Add a tag description…"
-				style:margin="-2px 0 12px 0"
-				onblur={(e) =>
-					commitTagDescription((e.currentTarget as HTMLDivElement).innerText)}
+				style:margin="0px 0 20px 0"
+				onfocusin={() => {
+					tagDescShellOpen = true
+				}}
+				onfocusout={onTagDescFocusOut}
+				oninput={(e) => {
+					tagDescFieldEmpty = tagDescriptionPlainText(e.currentTarget.innerHTML) === ''
+				}}
 			></div>
 		{/if}
 
@@ -716,7 +782,7 @@
 			border: none;
 			background: rgba(0, 0, 0, 0.04);
 			border-radius: 20px;
-			padding: 5px 14px 6px 14px;
+			padding: 5px 12px 6px 12px;
 			display: flex;
 			align-items: center;
 			justify-content: center;
@@ -724,8 +790,9 @@
 			flex-shrink: 0;
 			cursor: pointer;
 			font-family: inherit;
-			@include text-style(0.585, 400, 1.35rem);
+			@include text-style(0.585, 400, 1.2rem);
 			transition: all 0.2s ease-in-out;
+			white-space: nowrap;
 
 			&--active {
 				color: #32a0f0;
@@ -759,7 +826,19 @@
 		outline: none;
 		cursor: text;
 
-		&:empty::before {
+		:global(b),
+		:global(strong) {
+			font-weight: 600;
+		}
+		:global(i),
+		:global(em) {
+			font-style: italic;
+		}
+		:global(u) {
+			text-decoration: underline;
+		}
+
+		&.is-empty::before {
 			content: attr(data-placeholder);
 			color: rgba(0, 0, 0, 0.28);
 			pointer-events: none;
@@ -771,7 +850,7 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 12px;
-		margin-bottom: 10px;
+		margin-bottom: 5px;
 
 		&__tabs {
 			display: flex;

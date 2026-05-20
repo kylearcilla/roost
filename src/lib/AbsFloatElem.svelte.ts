@@ -144,10 +144,7 @@ export function getPopFloatElemPos(box: { height: number; width: number }) {
 			height,
 			width
 		},
-		containerDims: {
-			height: typeof window !== 'undefined' ? window.innerHeight : 800,
-			width: typeof window !== 'undefined' ? window.innerWidth : 1200
-		},
-		cursorPos: fromPos
+		cursorPos: fromPos,
+		margins: { ns: 8, ew: 8 }
 	})
 }

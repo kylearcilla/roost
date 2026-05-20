@@ -1,7 +1,12 @@
 <script lang="ts">
 	import Spinner from '$lib/components/Spinner.svelte'
+	import { extractUrl } from '$lib/lib/collection-sources'
 	import { global } from '$lib/lib/global.svelte'
-	import { addLibraryItemFromMetadata, addLibraryTitleItem } from '$lib/libraryContent.svelte'
+	import {
+		addLibraryImageFromUrl,
+		addLibraryItemFromMetadata,
+		addLibraryTitleItem
+	} from '$lib/libraryContent.svelte'
 	import { fetchContentMetadata } from '$lib/lib/fetch-content'
 
 	let {
@@ -37,6 +42,24 @@
 		return out.length ? out : null
 	}
 
+	/** Resolved `http(s)` / `data:` image URL, or `null` if not a direct image link. */
+	function imageUrlCandidate(raw: string): string | null {
+		const ex = extractUrl(raw)
+		if (!ex) return null
+		const href = ex.href.toLowerCase()
+		if (href.startsWith('data:image/')) return ex.href
+		if (href.startsWith('blob:')) return ex.href
+		let path = ''
+		try {
+			const u = new URL(ex.href)
+			path = u.pathname + (u.search || '')
+		} catch {
+			return null
+		}
+		if (!/\.(gif|jpe?g|png|webp|avif|svg|bmp|heic|heif)(\?[^#]*)?(?:#|$)/i.test(path)) return null
+		return ex.href
+	}
+
 	async function runSearch() {
 		if (onHome && !searchMode) return
 		const u = linkInput.trim()
@@ -58,6 +81,25 @@
 			return
 		}
 
+		const cid = global.selectedCollectionId?.trim() ?? ''
+		const imgHref = !onHome && cid ? imageUrlCandidate(u) : null
+		if (imgHref) {
+			isSearching = true
+			try {
+				await addLibraryImageFromUrl({
+					url: imgHref,
+					collectionId: cid,
+					activeTagFilter: global.currFilterTab
+				})
+				linkInput = ''
+			} catch (err) {
+				console.error('[LibSearch] image URL error', err)
+			} finally {
+				isSearching = false
+			}
+			return
+		}
+
 		isSearching = true
 		try {
 			const data = await fetchContentMetadata(u)
@@ -69,8 +111,7 @@
 			linkInput = ''
 		} catch (err) {
 			console.error('[LibSearch] metadata fetch error', err)
-		} 
-		finally {
+		} finally {
 			isSearching = false
 		}
 	}

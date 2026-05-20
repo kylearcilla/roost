@@ -94,6 +94,10 @@ async function renameCollectionMediaFolder(payload) {
 	return ipcRenderer.invoke('roost-rename-collection-media-folder', payload)
 }
 
+async function openLinkPopup(url) {
+	return ipcRenderer.invoke('roost-open-link-popup', url)
+}
+
 /** Real path for a File from disk (picker / drag); empty for synthetic blobs. */
 function getNativePathForFile(file) {
 	if (!file || typeof webUtils?.getPathForFile !== 'function') return ''
@@ -134,6 +138,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 	deleteImportedMedia,
 	deleteCollectionMediaFolder,
 	renameCollectionMediaFolder,
+	openLinkPopup,
 	getNativePathForFile,
 	roostMediaUrlFromPath
 })
